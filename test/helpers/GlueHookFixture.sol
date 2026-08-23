@@ -8,6 +8,7 @@ import {IGlueHook} from "../../contracts/interfaces/IGlueHook.sol";
 import {GluedV4Core, IPoolManagerMin} from "../../contracts/libs/GluedV4Core.sol";
 import {V4PoolHelper} from "./V4PoolHelper.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
+import {MockGlueStick} from "../mocks/MockGlueStick.sol";
 
 /**
  * @title  GlueHookFixture — shared deterministic fixture for the GlueHook audit suites.
@@ -26,6 +27,12 @@ abstract contract GlueHookFixture is Test {
     ///      fixture etches the GlueLiquidity runtime here, mirroring production where the deploy
     ///      script links the real nonce-0 library address instead.
     address constant LIQ_LIB = 0xb0B0000000000000000000000000000000000B0B;
+    /// @dev The REAL canonical GlueStick address (the hook's compile-time constant): the fixture
+    ///      etches {MockGlueStick} here, so the Glue burn path runs exactly as in production.
+    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    /// @dev The chain's canonical wrapped native, as the hook's constructor arg. Only its ADDRESS
+    ///      matters to the hook (an equality ban on pot mains), so a bare constant is enough.
+    address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant ETH = address(0);
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
     uint24 constant FEE = 3000;
@@ -39,12 +46,16 @@ abstract contract GlueHookFixture is Test {
 
     GlueHook pump;
     V4PoolHelper helper;
+    MockGlueStick stick;
 
-    /// @dev Deploy the venue, the linked library and the hook. Suites call this from their own `setUp`.
+    /// @dev Deploy the venue, the linked library, the GlueStick stand-in and the hook. Suites call
+    ///      this from their own `setUp`.
     function _deployCore() internal {
         vm.etch(POOL_MANAGER, _poolManagerRuntime());
         vm.etch(LIQ_LIB, vm.getDeployedCode("GlueLiquidity.sol:GlueLiquidity"));
-        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER), HOOK_ADDR);
+        deployCodeTo("MockGlueStick.sol:MockGlueStick", "", GLUE_STICK);
+        stick = MockGlueStick(GLUE_STICK);
+        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER, NATIVEWRAP), HOOK_ADDR);
         pump = GlueHook(payable(HOOK_ADDR));
         helper = new V4PoolHelper(POOL_MANAGER);
         vm.deal(address(this), 50_000 ether);

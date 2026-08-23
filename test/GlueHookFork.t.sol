@@ -31,6 +31,13 @@ contract GlueHookFork is Test {
     address constant HOOK_ADDR = 0x91110000000000000000000000000000000020c8;
     /// @dev The sentinel the hook artifact is statically linked against (foundry.toml).
     address constant LIQ_LIB = 0xb0B0000000000000000000000000000000000B0B;
+    /// @dev The REAL canonical GlueStick address (the hook's compile-time constant). The fixture
+    ///      etches the MockGlueStick stand-in over it even on a fork, keeping the suite hermetic
+    ///      on chains the Glue Protocol has not reached.
+    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    /// @dev The chain's canonical wrapped native, as the hook's constructor arg (only its address
+    ///      identity matters to the hook, so a constant serves every fork).
+    address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant ETH = address(0);
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
     uint24 constant FEE = 3000;
@@ -60,7 +67,8 @@ contract GlueHookFork is Test {
 
         // The hook and its delegatecall library at their permission-correct addresses, on the fork
         vm.etch(LIQ_LIB, vm.getDeployedCode("GlueLiquidity.sol:GlueLiquidity"));
-        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(PM), HOOK_ADDR);
+        deployCodeTo("MockGlueStick.sol:MockGlueStick", "", GLUE_STICK);
+        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(PM, NATIVEWRAP), HOOK_ADDR);
         pump = GlueHook(payable(HOOK_ADDR));
         helper = new V4PoolHelper(PM);
 
@@ -153,7 +161,7 @@ contract GlueHookFork is Test {
         uint256 potBefore = pump.potOf(id).balance;
         uint256 deadBefore = token.balanceOf(DEAD);
         // DELTA, not absolute: some chains pre-fund every account's native balance with a sentinel
-        // (Tempo pays gas in fee tokens and pins native balances to a constant), so a fresh EOA is
+        // (chains that pay gas in fee tokens pin native balances to a constant), so a fresh EOA is
         // not zero everywhere. The conservation claim is about what the harvest PAID, not what the
         // recipient happens to hold.
         uint256 carolBefore = carol.balance;

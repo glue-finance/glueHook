@@ -219,17 +219,15 @@ contract GlueHookLiquidity is GlueHookFixture {
             key, TICK_LO, TICK_HI, SEED_LIQ, alice, _cfg(0, 0, carol, address(0), 0, 0)
         );
 
-        // A NATIVE-MAIN pool mirrors the pot's rule: the network token cannot be burned
+        // A NATIVE MAIN can no longer exist at all — the burn path is Glue's unglue, so the pot
+        // declaration itself rejects the network token as main (see the Burn suite for the ban)
         MockERC20 secondary = new MockERC20("Sec", "SEC", 18);
         IPoolManagerMin.PoolKey memory nativeMain = IPoolManagerMin.PoolKey({
             currency0: ETH, currency1: address(secondary), fee: FEE, tickSpacing: SPACING, hooks: HOOK_ADDR
         });
         IPoolManagerMin(POOL_MANAGER).initialize(nativeMain, LAUNCH_SQRT);
+        vm.expectRevert(IGlueHook.BadRoles.selector);
         pump.initPot(nativeMain, ETH, carol);
-        vm.expectRevert(IGlueHook.BadConfig.selector);
-        pump.addLiquidityAdvanced{value: 50 ether}(
-            nativeMain, TICK_LO, TICK_HI, SEED_LIQ, alice, _cfg(0, 1, carol, dave, 0, 0)
-        );
 
         // setProgramConfig runs the SAME validation
         pump.addLiquidity{value: 50 ether}(key, TICK_LO, TICK_HI, SEED_LIQ, address(this));

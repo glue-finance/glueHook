@@ -62,7 +62,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Which wallet/network do I need?",
-      a: "Any EVM wallet on any of the 23 supported networks. The hook sits at the same address everywhere, so the flow is identical on Ethereum, Base, Robinhood Chain or any of the others.",
+      a: "Any EVM wallet on any of the 18 supported networks. The hook sits at the same address everywhere, so the flow is identical on Ethereum, Base, Robinhood Chain or any of the others.",
     },
     {
       q: "Do I have to configure everything at launch?",
@@ -616,7 +616,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "How do I find the hook on a new chain?",
-      a: "Same address everywhere: 0xb216070c3509047ea597E2E626A29cea427a60C8. Hardcode it once, gate by chainId if you must, and the integration ports across all 23 networks.",
+      a: "Same address everywhere: 0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8. Hardcode it once, gate by chainId if you must, and the integration ports across all 18 networks.",
     },
     {
       q: "What events should my indexer watch?",
@@ -674,7 +674,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "How is it tested?",
-      a: "123 local Foundry tests (128 with live-fork proofs on Ethereum and Tempo): unit, adversarial never-stop matrices, stateful invariants with randomized campaigns, and deterministic scenario walks.",
+      a: "123 local Foundry tests (128 with live-fork proofs on Ethereum mainnet): unit, adversarial never-stop matrices, stateful invariants with randomized campaigns, and deterministic scenario walks.",
     },
     {
       q: "What do the invariants actually check?",

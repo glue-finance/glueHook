@@ -338,7 +338,7 @@ export default function Landing() {
               <div className="mb-10 text-center">
                 <div className="kicker mb-3">08 · everywhere</div>
                 <h2 className="text-3xl font-extrabold tracking-tight sm:text-[42px]">
-                  One hook. <span className="grad-text">Twenty-three chains.</span>
+                  One hook. <span className="grad-text">Eighteen chains.</span>
                 </h2>
                 <p className="mx-auto mt-4 max-w-xl text-[15.5px] text-dim">
                   Deployed at the same address on every network, verified on
@@ -399,7 +399,7 @@ export default function Landing() {
                     create hooked pools straight from your own contracts and ship
                     products where every token launches with buybacks, sell
                     defense and self-growing liquidity built in — same address on
-                    all 23 chains, nothing to deploy, nothing to pay.
+                    all 18 chains, nothing to deploy, nothing to pay.
                   </p>
                   <div className="mt-8">
                     <Link href="/docs" className="btn btn-ghost">

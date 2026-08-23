@@ -8,10 +8,7 @@ export function nativeCurrencyOf(net: Net): { sym: string; icon: string } {
   const id = net.chain.id;
   if (id === 56 || id === 97) return { sym: "BNB", icon: "/tokens/bnb.png" };
   if (id === 137 || id === 80002) return { sym: "POL", icon: "/tokens/pol.png" };
-  if (id === 4217 || id === 42431) return { sym: "USD", icon: "/tokens/usdc.png" };
   if (id === 43114) return { sym: "AVAX", icon: "/tokens/eth.png" };
-  if (id === 42220) return { sym: "CELO", icon: "/tokens/eth.png" };
-  if (id === 143) return { sym: "MON", icon: "/tokens/eth.png" };
   return { sym: "ETH", icon: "/tokens/eth.png" };
 }
 
@@ -21,8 +18,6 @@ const IDS: Record<string, string> = {
   BNB: "binancecoin",
   POL: "polygon-ecosystem-token",
   AVAX: "avalanche-2",
-  CELO: "celo",
-  MON: "monad",
 };
 
 const TTL = 10 * 60 * 1000; // 10 minutes
@@ -115,7 +110,7 @@ async function fetchCoinGecko(): Promise<Record<string, number>> {
 /**
  * Live USD price of a network currency (DefiLlama primary, anonymous CoinGecko
  * fallback, 10-minute cache — fully keyless).
- * `USD` (Tempo) is 1 by definition; null while loading or if every source fails.
+ * `USD` is 1 by definition; null while loading or if every source fails.
  */
 export function useUsdPrice(sym: string): number | null {
   const [px, setPx] = useState<number | null>(sym === "USD" ? 1 : null);

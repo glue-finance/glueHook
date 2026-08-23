@@ -426,7 +426,7 @@ export function Integrate() {
       <H2>Route protocol revenue into buybacks</H2>
       <Code title="the entire integration">
         <span className="g">IGlueHook</span> constant HOOK ={"\n"}
-        {"  "}IGlueHook(<span className="g">0xb216070c3509047ea597E2E626A29cea427a60C8</span>);{"\n\n"}
+        {"  "}IGlueHook(<span className="g">0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</span>);{"\n\n"}
         function routeRevenue(uint256 amt) external {"{"}{"\n"}
         {"  "}<span className="c">{"// ERC20 secondary: approve + donate"}</span>{"\n"}
         {"  "}SECONDARY.approve(address(HOOK), amt);{"\n"}
@@ -478,7 +478,7 @@ export function Integrate() {
         <C>claim(asset)</C> at your own gas. You can never brick the machine by being slow.
       </P>
 
-      <Callout tone="info" title="one integration, 23 networks">
+      <Callout tone="info" title="one integration, 18 networks">
         <p>
           The hook is at the same address everywhere, so the constant above ports unchanged. Only
           the PoolKey differs per chain (different token addresses), nothing else.
@@ -557,7 +557,7 @@ export function BuildApps() {
       <Callout tone="good" title="stability guarantees">
         <p>
           The hook is immutable and un-upgradable: the ABI you integrate today is the ABI forever.
-          The address is identical on all 23 networks and will be identical on future ones. The
+          The address is identical on all 18 networks and will be identical on future ones. The
           licence explicitly authorizes building on the deployed hook — pools, donations,
           integrations, interfaces, tokens adopting it. Deploying your own copy is what it
           restricts.

@@ -8,13 +8,6 @@ import {IPoolManagerMin} from "../contracts/libs/GluedV4Core.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {BlockingERC20} from "./mocks/HostileTokens.sol";
 
-/// @dev A native recipient that always reverts — the split's delivered rest must park, never brick.
-contract SplitRefusesEth {
-    receive() external payable {
-        revert("never");
-    }
-}
-
 /// @dev A recipient that tries to re-enter the hook from inside its bounded delivery push.
 contract SplitReentrantRecipient {
     IGlueHook public hook;
@@ -41,7 +34,7 @@ contract SplitReentrantRecipient {
  *         merge into one cascade walk, validation and operator gating, the plain-addLiquidity
  *         defaults (owner == operator, split off), the remove-all-liquidity carry cycle, and the
  *         100%-compound and native-main edges. NS1–NS4 are the never-stop matrix for the new legs:
- *         a refusing recipient, an unburnable main under a burn share, a hostile native recipient,
+ *         a refusing recipient, a main whose Glue pull is blocked, a main Glue refuses to admit,
  *         and a re-entering recipient — every one of them fails SIDEWAYS (park, hold, book) while
  *         the carrying swap lands.
  */
@@ -200,8 +193,9 @@ contract GlueHookPotSplit is GlueHookFixture {
         assertEq(pump.programOf(id).carryMain, 0, "no carry");
     }
 
-    /// SP6 — SET-TIME VALIDATION: the two shares may not sum above 100%, a native main rejects a
-    ///       burn share (the mirror of the pot's own rule), and exactly 100% is legal.
+    /// SP6 — SET-TIME VALIDATION: the two shares may not sum above 100%, exactly 100% is legal,
+    ///       and a native main cannot exist at all — the pot declaration itself rejects the
+    ///       network token (the burn path is Glue's unglue, which native can never run).
     function test_SP6_configValidation() public {
         MockERC20 main = new MockERC20("Main", "MAIN", 18);
         (IPoolManagerMin.PoolKey memory key, bytes32 id) = _openWithSplit(address(main), rita, 0, 0);
@@ -215,24 +209,15 @@ contract GlueHookPotSplit is GlueHookFixture {
         pump.setProgramConfig(id, _cfg(uint64(5e17), uint64(5e17)));
         assertEq(pump.programOf(id).potCompoundShareWad, uint64(5e17), "stored");
 
-        // A native main can never carry a pot burn share
+        // A native main is rejected at the declaration, so a native pot burn share can never exist
         _deployCore();
         MockERC20 secondary = new MockERC20("Sec", "SEC", 18);
         IPoolManagerMin.PoolKey memory nkey = IPoolManagerMin.PoolKey({
             currency0: ETH, currency1: address(secondary), fee: FEE, tickSpacing: SPACING, hooks: address(pump)
         });
         IPoolManagerMin(POOL_MANAGER).initialize(nkey, LAUNCH_SQRT);
+        vm.expectRevert(IGlueHook.BadRoles.selector);
         pump.initPot(nkey, ETH, rita); // main = the network token
-        _mintTo(address(secondary), address(this), 10_000_000e18);
-        secondary.approve(address(pump), type(uint256).max);
-        vm.expectRevert(IGlueHook.BadConfig.selector);
-        pump.addLiquidityAdvanced{value: 60 ether}(
-            nkey, TICK_LO, TICK_HI, 1e21, address(this), _cfg(0, uint64(1e17))
-        );
-        // ... while a pure compound share on a native main is fine
-        pump.addLiquidityAdvanced{value: 60 ether}(
-            nkey, TICK_LO, TICK_HI, 1e21, address(this), _cfg(uint64(3e17), 0)
-        );
     }
 
     /// SP7 — OPERATOR-GATED, LIKE EVERY OTHER RULE: a stranger cannot set the split, the operator
@@ -403,13 +388,14 @@ contract GlueHookPotSplit is GlueHookFixture {
         assertEq(main.balanceOf(rita), rest, "and was delivered on retry");
     }
 
-    /// NS2 — AN UNBURNABLE MAIN UNDER A BURN SHARE: both probes fail, the leg settles to the held
-    ///       ledger (custody IS the burn), and the swap lands.
+    /// NS2 — AN UNBURNABLE MAIN UNDER A BURN SHARE: the token blocks the GlueStick's pull, so the
+    ///       unglue reverts, the leg settles to the held ledger (custody IS the burn), and the swap
+    ///       lands.
     function test_NS2_unburnableBurnLegHolds() public {
         BlockingERC20 main = new BlockingERC20();
         (IPoolManagerMin.PoolKey memory key, bytes32 id) =
             _openWithSplit(address(main), rita, 0, uint64(5e17));
-        main.setBlocked(DEAD, true); // no burn() and no dead route
+        main.setBlocked(GLUE_STICK, true); // the glue pull reverts: the unglue can never run
 
         (uint256 bought, ) = _pump(key);
         assertGt(bought, 0, "the swap landed");
@@ -420,78 +406,74 @@ contract GlueHookPotSplit is GlueHookFixture {
         assertEq(pump.obligationOf(address(main)), burnLeg, "and attributed");
     }
 
-    /// NS3 — NATIVE MAIN, HOSTILE NATIVE RECIPIENT: an ETH-main pot with a compound share and a
-    ///       recipient that reverts every send. The swap lands, the compound leg joins the carry in
-    ///       ETH, the refused rest parks, and the venue stays solvent in native terms.
-    function test_NS3_nativeMainHostileRecipient() public {
+    /// NS3 — A MAIN GLUE REFUSES TO ADMIT: the creation-time ensure fails (best-effort, the pool
+    ///       still opens), the first burn-intent delivery finds no glue — the unglue's own lazy
+    ///       chokepoint refuses too — so the leg settles to the held ledger and the asset is
+    ///       flagged: the next burn goes straight to held without ever probing the stick again.
+    function test_NS3_glueRefusedMainHoldsForever() public {
+        MockERC20 main = new MockERC20("Main", "MAIN", 18);
         _deployCore();
-        MockERC20 secondary = new MockERC20("Sec", "SEC", 18);
-        SplitRefusesEth hostile = new SplitRefusesEth();
-        IPoolManagerMin.PoolKey memory key = IPoolManagerMin.PoolKey({
-            currency0: ETH, currency1: address(secondary), fee: FEE, tickSpacing: SPACING, hooks: address(pump)
-        });
-        bytes32 id = keccak256(abi.encode(key));
-        IPoolManagerMin(POOL_MANAGER).initialize(key, LAUNCH_SQRT);
-        pump.initPot(key, ETH, address(hostile)); // main = the network token
+        stick.setRefuse(address(main), true); // Glue will never admit this asset
 
-        _mintTo(address(secondary), address(helper), 20_000_000e18);
-        helper.addLiquidity(key, TICK_LO, TICK_HI, _launchLiquidity());
-        _mintTo(address(secondary), address(this), 10_000_000e18);
-        secondary.approve(address(pump), type(uint256).max);
-        pump.addLiquidityAdvanced{value: 60 ether}(
-            key, TICK_LO, TICK_HI, 1e21, address(this), _cfg(uint64(3e17), 0)
-        );
-        // Fund the pot in its secondary (the ERC20 side)
-        pump.donate(key, 50_000e18);
+        // Creation survives the refused ensure, and no glue exists for the main
+        (IPoolManagerMin.PoolKey memory key, ) = _openEthPool(address(main), address(0));
+        (bool isSticky, ) = stick.isStickyAsset(address(main));
+        assertFalse(isSticky, "the best-effort ensure was refused");
+        _donateEth(key, 30 ether);
 
-        // A buy of main: pay secondary for ETH
-        vm.recordLogs();
-        helper.swap(key, false, -int256(20_000e18));
-        Vm.Log[] memory logs = vm.getRecordedLogs();
-        ( , , uint256 bought) = _lastPumped(logs);
-        assertGt(bought, 0, "the pump fired on the native-main pool");
+        // First pump: the unglue refuses, the whole burn-intent output is held and the flag set
+        (uint256 first, ) = _pump(key);
+        assertGt(first, 0, "the swap and its pump landed");
+        assertEq(pump.heldOf(address(main)), first, "held forever");
 
-        uint256 comp = (bought * 3e17) / 1e18;
-        assertEq(pump.programOf(id).carryMain, comp, "the compound leg joined the ETH carry");
-        assertEq(pump.parkedDirectOf(id), bought - comp, "the refused rest parked");
-        assertGe(address(pump).balance, pump.obligationOf(ETH), "native custody covers it all");
+        // Glue relents — the flag doesn't care: the probe never runs again
+        stick.setRefuse(address(main), false);
+        (uint256 second, ) = _pump(key);
+        assertGt(second, 0, "the second pump landed");
+        assertEq(pump.heldOf(address(main)), first + second, "straight to held, probe skipped");
+        assertEq(main.balanceOf(address(pump)), first + second, "custody covers the whole hold");
     }
 
-    /// NS4 — A RE-ENTERING RECIPIENT: the delivered rest lands on a contract that immediately calls
-    ///       back into the hook. The transient guard bounces it, the delivery still succeeds, and
-    ///       the carrying swap lands.
+    /// NS4 — A RE-ENTERING RECIPIENT: the harvest's native secondary leg lands on a contract that
+    ///       immediately calls back into the hook from inside its bounded 30k-stipend send. The
+    ///       transient guard bounces the re-entry, the delivery still succeeds, and the harvest
+    ///       settles whole.
     function test_NS4_reentrantRecipientBounces() public {
+        MockERC20 main = new MockERC20("Main", "MAIN", 18);
         _deployCore();
-        MockERC20 secondary = new MockERC20("Sec", "SEC", 18);
+        (IPoolManagerMin.PoolKey memory key, ) = _openEthPool(address(main), rita);
         SplitReentrantRecipient hostile = new SplitReentrantRecipient();
-        IPoolManagerMin.PoolKey memory key = IPoolManagerMin.PoolKey({
-            currency0: ETH, currency1: address(secondary), fee: FEE, tickSpacing: SPACING, hooks: address(pump)
-        });
-        bytes32 id = keccak256(abi.encode(key));
-        IPoolManagerMin(POOL_MANAGER).initialize(key, LAUNCH_SQRT);
-        pump.initPot(key, ETH, address(hostile));
         hostile.arm(IGlueHook(address(pump)), key);
         vm.deal(address(hostile), 1 ether); // gas money for its re-entry attempt
 
-        _mintTo(address(secondary), address(helper), 20_000_000e18);
-        helper.addLiquidity(key, TICK_LO, TICK_HI, _launchLiquidity());
-        _mintTo(address(secondary), address(this), 10_000_000e18);
-        secondary.approve(address(pump), type(uint256).max);
+        _mintTo(address(main), address(this), 10_000_000e18);
+        main.approve(address(pump), type(uint256).max);
         pump.addLiquidityAdvanced{value: 60 ether}(
-            key, TICK_LO, TICK_HI, 1e21, address(this), _cfg(uint64(2e17), 0)
+            key, TICK_LO, TICK_HI, 1e21, address(this),
+            IGlueHook.ProgramConfig({
+                buybackShareWad: 0,
+                burnShareWad: 0,
+                compoundShareWad: 0,
+                potCompoundShareWad: 0,
+                potBurnShareWad: 0,
+                publicHarvest: true,
+                secondaryRecipient: address(hostile), // the whole ETH-side gross lands on it
+                mainRecipient: dave,
+                minMain: type(uint256).max,
+                minSecondary: type(uint256).max
+            })
         );
-        pump.donate(key, 50_000e18);
+
+        // Fees both ways, then the manual harvest pays the hostile native recipient
+        helper.swap(key, true, -int256(2 ether));
+        helper.swap(key, false, -int256(1_000e18));
 
         uint256 hostileBefore = address(hostile).balance;
-        vm.recordLogs();
-        helper.swap(key, false, -int256(20_000e18)); // the carrying buy of native main
-        ( , , uint256 bought) = _lastPumped(vm.getRecordedLogs());
-        assertGt(bought, 0, "the swap landed with the hostile recipient in the path");
+        pump.harvest(key);
 
-        uint256 comp = (bought * 2e17) / 1e18;
         // The 30k-stipend send succeeds (the try/catch swallows the guard bounce inside), the
         // re-entry itself never lands
-        assertEq(address(hostile).balance - hostileBefore, bought - comp, "the rest was delivered");
+        assertGt(address(hostile).balance - hostileBefore, 0, "the ETH leg was delivered");
         assertFalse(hostile.reentered(), "the re-entry bounced off the guard");
         assertGe(address(pump).balance, pump.obligationOf(ETH), "the venue stays solvent");
     }

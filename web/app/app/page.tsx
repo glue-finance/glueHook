@@ -161,8 +161,8 @@ function AppInner() {
     lastIdRef.current = id;
   }, [net, pool?.poolId, tab, opening]);
 
-  const pot = usePot(net, pool?.poolId ?? null);
-  const program = useProgram(net, pool?.poolId ?? null);
+  const pot = usePot(net, pool?.poolId ?? null, pool?.hook);
+  const program = useProgram(net, pool?.poolId ?? null, pool?.hook);
   const feed = useFeed(net, pool);
   const mainMeta = useTokenMeta(net, pot.data?.main);
   const secMeta = useTokenMeta(net, pot.data?.secondary);

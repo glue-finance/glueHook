@@ -31,7 +31,7 @@ contract GlueHookUnit is GlueHookFixture {
     ///      reverts in the constructor, so a mis-mined salt fails at deploy time.
     function test_U1_wrongAddressRevertsAtDeploy() public {
         vm.expectRevert(IGlueHook.BadRoles.selector);
-        new GlueHook(POOL_MANAGER);
+        new GlueHook(POOL_MANAGER, NATIVEWRAP);
     }
 
     /// U2 — every callback and the pump's self-call entry are PoolManager-only / self-only.
@@ -173,10 +173,10 @@ contract GlueHookUnit is GlueHookFixture {
 
         (bool delivered, address to, uint256 amount, IGlueHook.Delivery mode) = _lastDelivered(logs);
         assertTrue(delivered, "the bought main was delivered");
-        assertEq(to, DEAD, "to the dead address (no glue, no burn())");
-        assertEq(uint8(mode), uint8(IGlueHook.Delivery.DEAD), "as a DEAD delivery");
+        assertEq(to, GLUE_STICK, "through the Glue Protocol's unglue");
+        assertEq(uint8(mode), uint8(IGlueHook.Delivery.BURNED), "as a BURNED delivery");
         assertEq(amount, bought, "in full");
-        assertEq(token.balanceOf(DEAD), bought, "and it actually arrived");
+        assertEq(token.balanceOf(DEAD), bought, "and the glue really destroyed it (dead-routed: no burn())");
         assertEq(token.balanceOf(address(pump)), 0, "nothing stuck to the hook");
     }
 

@@ -42,6 +42,10 @@ contract GlueHookInvariant is StdInvariant, Test {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     /// @dev An address carrying EXACTLY `beforeInitialize | beforeSwap | afterSwap | beforeSwapReturnsDelta`.
     address constant HOOK_ADDR = 0x91110000000000000000000000000000000020c8;
+    /// @dev The REAL canonical GlueStick address (the hook's compile-time constant).
+    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    /// @dev The chain's canonical wrapped native, as the hook's constructor arg.
+    address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant ETH = address(0);
     uint24 constant FEE = 3000;
     int24 constant SPACING = 120;
@@ -66,9 +70,13 @@ contract GlueHookInvariant is StdInvariant, Test {
             vm.getDeployedCode("GlueLiquidity.sol:GlueLiquidity")
         );
 
+        // The GlueStick stand-in at its real canonical address, so burn-intent deliveries run the
+        // production Glue path.
+        deployCodeTo("MockGlueStick.sol:MockGlueStick", "", GLUE_STICK);
+
         // The hook, at an address whose low bits ARE its permissions. `deployCodeTo` runs the real
         // constructor, so the immutables are baked in exactly as a mined CREATE2 deployment would.
-        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER), HOOK_ADDR);
+        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER, NATIVEWRAP), HOOK_ADDR);
         pump = GlueHook(payable(HOOK_ADDR));
         assertEq(uint160(HOOK_ADDR) & GluedV4Core.ALL_HOOK_MASK, pump.REQUIRED_HOOK_FLAGS(), "hook bits");
 

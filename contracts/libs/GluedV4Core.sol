@@ -290,7 +290,7 @@ interface IPoolManagerMin {
     /// @param hookData The data to pass to the hook
     /// @dev Returns BalanceDelta swapDelta as int256
     function swap(PoolKey memory key, SwapParams memory params, bytes calldata hookData) external returns (int256 swapDelta);
-    
+
     /// @notice Settle the pool
     /// @dev For native ETH: settle{value: amount}(). For ERC20: sync(currency) + transfer + settle()
     function settle() external payable returns (uint256);
@@ -784,6 +784,11 @@ library GluedV4Core {
     /// @dev V4 swap fee denominator. PoolKey.fee is expressed in millionths (e.g. 3000 = 0.30%, 500 = 0.05%).
     uint256 internal constant FEE_DENOMINATOR = 1_000_000;
 
+    /// @dev V4 dynamic-fee sentinel (LPFeeLibrary.DYNAMIC_FEE_FLAG). A pool keyed with EXACTLY this
+    ///      value carries no fee in its key. GlueHook REFUSES such pools at creation — it serves
+    ///      static-fee pools only — so the sentinel survives here purely as the rejection check.
+    uint24 internal constant DYNAMIC_FEE_FLAG = 0x800000;
+
     /**
      * @notice Compute the sqrtPrice that results from adding `amount0` of currency0 (rounded up)
      * @dev Direct port of Uniswap V4 SqrtPriceMath.getNextSqrtPriceFromAmount0RoundingUp (the `add=true` branch).
@@ -874,7 +879,7 @@ library GluedV4Core {
      * @notice Quote the exact output of a V4 exact-input swap (read-only, single-step)
      * @dev Replicates the math that PoolManager.swap() runs inside its current-tick active liquidity:
      *
-     *        amountInLessFee = amountIn * (FEE_DENOMINATOR - key.fee) / FEE_DENOMINATOR
+     *        amountInLessFee = amountIn * (FEE_DENOMINATOR - slot0.lpFee) / FEE_DENOMINATOR
      *
      *      Then, depending on direction:
      *        zeroForOne  (selling currency0, price decreases):
@@ -923,7 +928,9 @@ library GluedV4Core {
 
         // Deduct LP fee from input. V4 fee is in millionths: e.g. 3000 = 0.30%, 500 = 0.05%.
         // amountInLessFee = amountIn * (1e6 - fee) / 1e6, rounded DOWN (matches V4 — the missing wei stays as fee).
-        uint256 amountInLessFee = GluedMath.md512(amountIn, FEE_DENOMINATOR - uint256(key.fee), FEE_DENOMINATOR);
+        // The fee is read from Slot0, never the key: the live slot is the fee the pool actually
+        // charges (identical to `key.fee` on the static-fee pools the hook serves).
+        uint256 amountInLessFee = GluedMath.md512(amountIn, FEE_DENOMINATOR - uint256(slot0.lpFee), FEE_DENOMINATOR);
 
         if (zeroForOne) {
             // Sell currency0 (e.g. ETH for ETH/TOKEN pools): sqrtPrice DECREASES
@@ -1385,8 +1392,10 @@ library GluedV4Core {
             if (target >= slot0.sqrtPriceX96) return (0, 0);
         }
 
+        // The fee comes from Slot0, never from the key: `slot0.lpFee` is the fee the pool
+        // actually charges (identical to `key.fee` on the static-fee pools the hook serves).
         (, uint256 amountIn, uint256 out, uint256 fee) = computeSwapStep(
-            slot0.sqrtPriceX96, target, liquidity, amountRemaining, swapFee(slot0.protocolFee, key.fee, zeroForOne)
+            slot0.sqrtPriceX96, target, liquidity, amountRemaining, swapFee(slot0.protocolFee, slot0.lpFee, zeroForOne)
         );
         // The swapper pays input plus fee
         return (amountIn + fee, out);

@@ -226,8 +226,11 @@ function AddLiquidity({
   // Uniswap rule: an amount above the wallet balance disables the button
   const insufficient0 = amt0 > 0n && bal0.data !== undefined && amt0 > bal0.data;
   const insufficient1 = amt1 > 0n && bal1.data !== undefined && amt1 > bal1.data;
-  const allow0 = useAllowance(net, poolKey.currency0, me, net.hook);
-  const allow1 = useAllowance(net, poolKey.currency1, me, net.hook);
+  // the pool's OWN hook (V1 pools live on the V1 deployment) — it is the
+  // spender being approved and the contract every liquidity call targets
+  const hookAddr = poolKey.hooks as Address;
+  const allow0 = useAllowance(net, poolKey.currency0, me, hookAddr);
+  const allow1 = useAllowance(net, poolKey.currency1, me, hookAddr);
   const needApprove0 =
     !isNative(poolKey.currency0) && amt0 > 0n && allow0.data !== undefined && allow0.data < amt0;
   const needApprove1 =
@@ -248,7 +251,7 @@ function AddLiquidity({
         address: token,
         abi: erc20Abi,
         functionName: "approve",
-        args: [net.hook, maxUint256],
+        args: [hookAddr, maxUint256],
       });
       await Promise.all([allow0.refetch(), allow1.refetch()]);
     } finally {
@@ -260,15 +263,17 @@ function AddLiquidity({
     if (needApprove0 || needApprove1) return; // the button is the approval until then
     const value = hasNative ? parseAmt(amounts.a0, 18) : 0n;
     if (programExists) {
-      await send({ functionName: "addProgramLiquidity", args: [poolKey, liq], value });
+      await send({ address: hookAddr, functionName: "addProgramLiquidity", args: [poolKey, liq], value });
     } else if (advanced) {
       await send({
+        address: hookAddr,
         functionName: "addLiquidityAdvanced",
         args: [poolKey, 0, 0, liq, ownerAddr, draftToConfig(draft, main?.decimals ?? 18, sec?.decimals ?? 18)],
         value,
       });
     } else {
       await send({
+        address: hookAddr,
         functionName: "addLiquidity",
         args: [poolKey, 0, 0, liq, ownerAddr],
         value,
@@ -415,6 +420,8 @@ function Manage({
   me?: Address;
 }) {
   const { tx, send } = useHookTx(net);
+  // every manage call targets the pool's OWN hook deployment (V1 or V2)
+  const hookAddr = poolKey.hooks as Address;
   const [draft, setDraft] = useState<ConfigDraft | null>(null);
   const [removePct, setRemovePct] = useState(50);
   const [newOwner, setNewOwner] = useState("");
@@ -520,7 +527,7 @@ function Manage({
         <button
           className="btn btn-primary w-full"
           disabled={tx.s === "wallet" || tx.s === "pending" || (!program.publicHarvest && !isOwner)}
-          onClick={() => send({ functionName: "harvest", args: [poolKey] })}
+          onClick={() => send({ address: hookAddr, functionName: "harvest", args: [poolKey] })}
         >
           Harvest now
         </button>
@@ -570,7 +577,7 @@ function Manage({
                 className="btn btn-ghost mt-2 w-full"
                 disabled={removeL <= 0n || tx.s === "wallet" || tx.s === "pending"}
                 onClick={() =>
-                  send({ functionName: "removeProgramLiquidity", args: [poolKey, removeL, me] })
+                  send({ address: hookAddr, functionName: "removeProgramLiquidity", args: [poolKey, removeL, me] })
                 }
               >
                 Remove {removePct}% of the position
@@ -591,6 +598,7 @@ function Manage({
                 disabled={!isOperator || !!cfgErr || tx.s === "wallet" || tx.s === "pending"}
                 onClick={() =>
                   send({
+                    address: hookAddr,
                     functionName: "setProgramConfig",
                     args: [pool.poolId, draftToConfig(liveDraft, main?.decimals ?? 18, sec?.decimals ?? 18)],
                   })
@@ -614,6 +622,7 @@ function Manage({
                       disabled={(!isAddress(newOwner) && newOwner !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
                       onClick={() =>
                         send({
+                          address: hookAddr,
                           functionName: "transferProgramOwnership",
                           args: [pool.poolId, newOwner === "0x0" ? zeroAddress : (newOwner as Address)],
                         })
@@ -635,6 +644,7 @@ function Manage({
                       disabled={(!isAddress(newOperator) && newOperator !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
                       onClick={() =>
                         send({
+                          address: hookAddr,
                           functionName: "setProgramOperator",
                           args: [pool.poolId, newOperator === "0x0" ? zeroAddress : (newOperator as Address)],
                         })
@@ -660,6 +670,7 @@ function Manage({
                       disabled={(!isAddress(newRecipient) && newRecipient !== "0x0") || tx.s === "wallet" || tx.s === "pending"}
                       onClick={() =>
                         send({
+                          address: hookAddr,
                           functionName: "setRecipient",
                           args: [pool.poolId, newRecipient === "0x0" ? zeroAddress : (newRecipient as Address)],
                         })
@@ -698,6 +709,8 @@ function Donate({
   const [amount, setAmount] = useState("");
   const [phase, setPhase] = useState<string | null>(null);
   const { tx, send } = useHookTx(net);
+  // donations land on the pool's OWN hook — it holds the pot being fueled
+  const hookAddr = poolKey.hooks as Address;
   const secIsNative = pot ? isNative(pot.secondary) : false;
   const dec = sec?.decimals ?? 18;
 
@@ -721,7 +734,7 @@ function Donate({
   // Live allowance read gates the ONE button, Uniswap-style: while the
   // approval is missing the button IS the approval — one transaction per
   // press, label advancing on the verified receipt.
-  const allowSec = useAllowance(net, pot?.secondary, me, net.hook);
+  const allowSec = useAllowance(net, pot?.secondary, me, hookAddr);
   const amtParsed = (() => {
     try {
       return parseUnits(amount || "0", dec);
@@ -744,7 +757,7 @@ function Donate({
         address: pot.secondary,
         abi: erc20Abi,
         functionName: "approve",
-        args: [net.hook, maxUint256],
+        args: [hookAddr, maxUint256],
       });
       await allowSec.refetch();
     } finally {
@@ -755,6 +768,7 @@ function Donate({
   async function submit() {
     if (!pot || amtParsed <= 0n || needApprove) return;
     await send({
+      address: hookAddr,
       functionName: "donate",
       args: [poolKey, amtParsed],
       value: secIsNative ? amtParsed : 0n,

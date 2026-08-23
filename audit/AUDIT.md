@@ -4,8 +4,8 @@
 DELEGATECALL-linked `contracts/libs/GlueLiquidity.sol` harvest engine
 **Version reviewed:** commit at the tip of `main` at the time of this report
 **Compiler:** solc `0.8.35`, EVM target `prague`, `viaIR`, `optimizer_runs = 1`, revert strings stripped
-**Runtime size:** `GlueHook` 23,465 bytes (under the 24,576-byte EIP-170 limit), `GlueLiquidity`
-11,843 bytes
+**Runtime size:** `GlueHook` 23,680 bytes (under the 24,576-byte EIP-170 limit), `GlueLiquidity`
+12,261 bytes
 **License:** BUSL-1.1 (`LICENCE.txt`)
 
 This is a self-audit performed alongside development. It is written to be independently
@@ -19,21 +19,25 @@ with its exact economic bound.
 ## 1. Scope
 
 ### In scope
-- `contracts/GlueHook.sol` — the hook: pot factory, the pump (`afterSwap`), the shield
-  (`beforeSwap`), donations, the burn/delivery cascade, the LP PROGRAM layer (single owner-controlled
-  liquidity position per pool with auto-harvest, auto-compound, and a per-side fee split), the
-  ONE-TRANSACTION launch (`launchPool`: initialise + roles + program + seed in a single call), and
-  all views.
+- `contracts/GlueHook.sol` — the hook: pot factory (STATIC-FEE pools only — a key carrying the
+  dynamic-fee sentinel is refused on both creation doors), the pump (`afterSwap`), the shield
+  (`beforeSwap`), donations, the Glue burn/delivery cascade, the LP PROGRAM layer (single
+  owner-controlled liquidity position per pool with auto-harvest, auto-compound, and a per-side
+  fee split), the ONE-TRANSACTION launch (`launchPool`: initialise + roles + program + seed in a
+  single call), and all views.
 - `contracts/libs/GlueLiquidity.sol` — the hook's DELEGATECALL-linked engine (the pot role
-  declaration and recipient move, program creation and the seed/add liquidity mint, the two role
+  declaration — including the glueable-main gate and the best-effort `ensureWrapper` — and the
+  recipient move, program creation and the seed/add liquidity mint, the two role
   hand-offs, the two fee collects, config validation, the flat harvest split,
-  the compound mint, and the whole DELIVERY engine — the buyback split's placement, the burn
-  cascade, recipient pushes and the parked/held/owed booking). It declares no state of its own:
+  the compound mint, and the whole DELIVERY engine — the buyback split's placement, the Glue
+  burn, recipient pushes and the parked/held/owed booking). It declares no state of its own:
   every function runs in the hook's own storage,
   address and balance through storage pointers passed from the hook's declarations, and `msg.sender`
   is preserved so the admin/owner gates are unchanged — it is security-equivalent to inlined hook
   code and is reviewed as part of the hook.
 - `contracts/interfaces/IGlueHook.sol` — the external surface.
+- `contracts/interfaces/IGlueStickMin.sol` — the minimal Glue Protocol surface the hook talks to
+  (`isStickyAsset`, `ensureWrapper`, and the pure-burn `unglue`).
 - `contracts/libs/GluedV4Core.sol` — the V4 primitives the hook relies on (`computeSwapStep`,
   `quoteSwapStep`, `tangentReserve`, `swapFee`, `toBeforeSwapDelta`, liquidity math, the unlock
   callback frame, slot0/liquidity reads).
@@ -43,6 +47,13 @@ with its exact economic bound.
 - The Uniswap V4 `PoolManager` itself. The suite etches the real Sepolia runtime bytecode and trades
   against it, so the hook's interaction with the real venue is exercised, but the PoolManager is not
   the subject of this review.
+- The Glue Protocol's `GlueStick` singleton (`GLUE_STICK`, the same address on every chain). The
+  hook talks to it defensively on every path: creation-time `ensureWrapper` under `try/catch`
+  (a refusal never blocks a pool), and every burn's `unglue` accepted only on the hook's own
+  verified balance drop, falling through to the held-forever ledger otherwise — so a missing,
+  reverting or lying GlueStick degrades a burn into a hold, never into a stuck swap or a fake burn.
+  The suite exercises the integration against a faithful stand-in etched at the real canonical
+  address.
 - OpenZeppelin's `SafeERC20`/`Address` (vendored as a git submodule at a release tag).
 
 ---
@@ -52,15 +63,23 @@ with its exact economic bound.
 A single hook singleton is deployed once per chain to a mined address whose low 14 bits equal the
 four permission flags the PoolManager reads (`beforeInitialize | beforeSwap | afterSwap |
 beforeSwapReturnsDelta`). The constructor asserts this, so a mis-mined address fails at deploy time.
-The recommended deployment is two plain-CREATE transactions from a mined fresh key — the
+It takes two immutable arguments — the chain's PoolManager and **`NATIVEWRAP`**, the chain's
+canonical wrapped native (the WETH9-style wrapper Uniswap's own periphery uses; `address(0)` on a
+chain with no spendable native coin). The Glue Protocol's **`GLUE_STICK`** singleton is a
+compile-time constant, the same address on every chain. The recommended deployment is two
+plain-CREATE transactions from a mined fresh key — the
 `GlueLiquidity` library at nonce 0, the hook (linked against it) at nonce 1 — giving the same two
-addresses on every EVM chain regardless of the per-chain PoolManager constructor argument.
+addresses on every EVM chain regardless of the per-chain constructor arguments.
 
 Any pool that names the hook gets a **pot**. The pool's initialiser is captured as the pot's
 **admin** (`beforeInitialize`), and the admin declares the roles once (`initPot`): one of the pool's
 two currencies is **MAIN** (defended, bought back, delivered) and the other is **SECONDARY** (the
-only currency the pot holds and the only currency `donate` accepts). Either side may be native ETH,
-so the hook is pair-agnostic — a token-quoted-in-ETH pool is one configuration, not a requirement.
+only currency the pot holds and the only currency `donate` accepts). The SECONDARY may be native
+ETH or any ERC20, so the hook is pair-agnostic on the buying side. The MAIN must be **GLUEABLE**:
+the network token and `NATIVEWRAP` are rejected as main outright, because every burn is the Glue
+Protocol's own `unglue` and neither can run it. Declaring a pot also **ensures the main's glue
+exists** (`GLUE_STICK.ensureWrapper`, best effort under `try/catch` — a refused or missing
+GlueStick never blocks the pool; that main's burns settle to the held ledger instead).
 
 The same three steps collapse into ONE transaction through **`launchPool`**: the hook calls
 `PoolManager.initialize` itself, then runs the `initPot` and `addLiquidityAdvanced` bodies with
@@ -81,14 +100,17 @@ Two mechanics spend the pot, both settled inside a third party's swap:
 | **Shield** (`beforeSwap`) | a MAIN → SECONDARY sell | absorbs the sell at the pool's own execution price, paying the seller from the pot |
 
 Everything the two mechanics acquire is routed through the **delivery cascade** to the pot's
-recipient. `recipient == address(0)` means BURN and runs, cheapest-first: the token's own `burn`
-(verified by a balance drop) → a transfer to `0xdead` → **held on the hook FOREVER** for a token that
-refuses both. The hold is terminal by design: there is no withdrawal path for it, so custody IS the
-burn (`heldOf`), and the asset is flagged unburnable on the first fall-through so the probes never
-run again. A live recipient is a literal target; a refusal parks per-pool, retryable through
-`flushDirect`. A pot whose MAIN is the network token can never be set to burn (`initPot`/
-`setRecipient` reject it) — its bought ETH is pushed to the recipient with a 30,000-gas stipend and
-parks on refusal.
+recipient. `recipient == address(0)` means BURN, and the burn is the Glue Protocol's own — the hook
+never destroys supply itself: an exact-amount approval to the `GLUE_STICK`, then `unglue` with an
+**empty collateral list** (a PURE BURN — the main is pulled from the hook and destroyed
+in-protocol, which runs its own burn / dead-route fallbacks; nothing is redeemed and the glue's
+backing concentrates for every remaining holder). The unglue is accepted **only on the hook's
+verified balance drop** — a codeless GlueStick or a lying token never counts as burned — and a
+refusal falls through to the terminal sink: the amount is **held on the hook FOREVER**. The hold is
+terminal by design: there is no withdrawal path for it, so custody IS the burn (`heldOf`), and the
+asset is flagged unburnable on the first refusal so the probe never runs again. Every leg is
+tolerant (a failure reports sideways, never reverts), so no burn can ever revert the carrying swap.
+A live recipient is a literal target; a refusal parks per-pool, retryable through `flushDirect`.
 
 **The LP PROGRAM layer.** The pot admin may additionally create the pool's ONE hook-held liquidity
 position (`addLiquidity` = everything off, `addLiquidityAdvanced` = full rules at creation, both
@@ -105,7 +127,7 @@ to anyone. The
 split is FLAT: every share reads off the GROSS fees of its side, and the two shares that can claim
 a side (`compound + buyback` on the secondary, `compound + burn` on the main) must sum to at most
 100% at set-time. The buyback share is credited straight to the pool's own pot (the buyback fuel),
-the burn share walks the burn cascade, and each side's exact remainder goes to its single
+the burn share runs the Glue burn, and each side's exact remainder goes to its single
 recipient (which must be live whenever the side's shares sum below 100%). The COMPOUND budget —
 `compoundShareWad` of both sides PLUS the program's CARRY (whatever earlier mints could not
 place) — is re-minted into the program's own position at the live price across its fixed range;
@@ -121,15 +143,21 @@ owner's property, and the owner's zero (creation or `transferProgramOwnership(po
 locks the liquidity forever with `publicHarvest` forced on so an ownerless program is never
 manually unharvestable. Richer custody policy (timelocks, vesting, DAO control) is built ON TOP by
 transferring ownership to a contract that implements it. All booking precedes every external send
-(CEI), and a native-main program mirrors the pot's rule: its `burnShareWad` must be zero.
+(CEI), and a burn share is always legal — the main is glueable by construction (`initPot` enforced
+it). The pool's LP fee is NOT an operator surface: the hook serves STATIC-FEE pools only (a key
+carrying the dynamic-fee sentinel `0x800000` is refused at `beforeInitialize` AND at `launchPool`,
+which the PoolManager's callback-skip would otherwise let through), so the fee every trader and LP
+sees is immutable in the key. The swap math still reads the LIVE `slot0.lpFee` — on the pools the
+hook serves the two always agree, and the slot is the authoritative source that composes with the
+protocol fee.
 
 **The BUYBACK SPLIT.** The same operator additionally owns two shares over the POT'S OUTPUT
 (`potCompoundShareWad`, `potBurnShareWad`): before the pot's recipient logic runs, every delivery
 of bought or absorbed main carves `⌊out·potCompound/1e18⌋` into the program's compound CARRY
 (booked as delivery mode `COMPOUNDED`, it becomes position liquidity at the next harvest's mint)
-and `⌊out·potBurn/1e18⌋` into the burn cascade; the exact subtraction remainder follows the pot's
-recipient unchanged. Set-time laws mirror the fee split: the two shares sum to at most 100%, a
-native main forces `potBurn = 0`, and a pool with no program reads both shares as zero (the whole
+and `⌊out·potBurn/1e18⌋` into the Glue burn; the exact subtraction remainder follows the pot's
+recipient unchanged. Set-time laws mirror the fee split: the two shares sum to at most 100%,
+and a pool with no program reads both shares as zero (the whole
 output follows the pot's recipient — plain `addLiquidity` also ships with both at zero, so nothing
 is armed without the operator's explicit opt-in). When the pot's recipient is itself `address(0)`,
 the burn share and the remainder merge into ONE cascade walk. The carry credit is pure accounting
@@ -154,6 +182,14 @@ surface is therefore:
 7. **Abuse the LP program** (harvest-split drift, re-entering a bounded push, editing rules after
    the operator role was zeroed, taking another owner's liquidity, mixing principal with fees on an
    add/remove).
+8. **Fake or grief the Glue burn** (a lying/absent GlueStick "succeeding" without pulling, a main
+   that blocks the stick's pull, a main Glue refuses to admit) — closed by the verified balance
+   drop and the held-forever fall-through: the worst case is a hold, never a fake burn, a stuck
+   swap or a blocked pool creation.
+9. **Smuggle in a dynamic-fee pool** (whose fee an operator could then move under traders, and
+   whose sentinel `key.fee` would poison any math that read it) — closed at the door: BOTH
+   creation paths refuse the sentinel outright, so every pool the hook serves carries one
+   immutable fee for its whole life.
 
 Each is addressed below and mapped to the test that exercises it.
 
@@ -262,8 +298,9 @@ and invariant **PP4** (no pump ever spent more than the buy that carried it).
 **Claim (secondary conservation).** `pot + Σ shield payouts + Σ pump spends == Σ donations`, exactly.
 Every wei that ever entered a pot is either still there or was spent by a mechanic that logged it.
 
-**Claim (delivery identity).** `Σ main acquired == Σ main delivered` — burned, sent to the dead
-address, held forever, or parked. Nothing the two mechanics acquire evaporates or sits unowned.
+**Claim (delivery identity).** `Σ main acquired == Σ main delivered` — sent to a recipient, burned
+through the Glue unglue, held forever, or parked. Nothing the two mechanics acquire evaporates or
+sits unowned.
 
 **Claim (solvency).** The hook's balance of any asset is always `≥ obligationOf(asset)` = every pot
 denominated in it, plus everything parked in it, plus everything held forever in it, plus the owed
@@ -286,7 +323,7 @@ the GROSS of its side:
 ```
     cMain  = ⌊fMain · compoundShareWad / 1e18⌋,  cSec = ⌊fSec · compoundShareWad / 1e18⌋
     fueled = ⌊fSec · buybackShareWad / 1e18⌋     → credited to the pool's own pot
-    burned = ⌊fMain · burnShareWad / 1e18⌋       → the burn cascade
+    burned = ⌊fMain · burnShareWad / 1e18⌋       → the Glue burn
     secondaryRecipient receives fSec − cSec − fueled   (exactly — division dust lands here)
     mainRecipient      receives fMain − cMain − burned (exactly)
 ```
@@ -386,7 +423,7 @@ swaps (`test_coverage_programMechanismsLand`).
 
 ## 6. Test inventory
 
-`forge clean && forge test` — **123 tests, 0 failures** (128 with `FORK_RPC_URL` set: the live-chain
+`forge clean && forge test` — **127 tests, 0 failures** (132 with `FORK_RPC_URL` set: the live-chain
 fork suite self-skips offline).
 
 | Suite | File | Count | What it proves |
@@ -395,15 +432,16 @@ fork suite self-skips offline).
 | Program invariant | `GlueHookProgramInvariant.t.sol` | 7 | PI1–PI6 + 1 anti-vacuity walk: the same random walk with the LP program live and every split leg armed — solvency, exact main attribution, pot conservation with harvest fuel, delivery identity, monotone liquidity |
 | Unit | `GlueHookUnit.t.sol` | 14 | U1–U14: deploy gate, callback auth, admin capture, initPot/setRecipient validation, native + ERC20 + FoT donations, pump/shield happy paths, recipient delivery, views/quotes, dust skip |
 | Adversarial | `GlueHookAdversarial.t.sol` | 11 | A1–A11: twin-pool parity, self-sandwich unprofitability, spot manipulation, hostile recipient park, reentrant donate, zero-fee refusal, 100% FoT refusal, direction discipline, pot isolation, pump-failure isolation, reentrant harvest recipient |
-| Burn cascade | `GlueHookBurn.t.sol` | 9 | B1–B9: held-forever terminal hold, native burn, fake-burn fallthrough, the unburnable flag's permanent short-circuit, per-asset flag isolation, flushDirect guard, native-main burn rejection, refused-delivery park + retry (ERC20 and native) |
-| LP program | `GlueHookLiquidity.t.sol` | 17 | L1–L12 + L18–L22: normal/advanced entries, full-range sentinel, creation gates, config validation (incl. the native-main burn mirror and the per-side share-sum bound), exact gross-referenced harvest split, auto-harvest mins, harvest-first adds, removes, owed backlog + claim, the operator-zero config freeze, surrendered-at-birth, lifecycle solvency, the owner-only harvest gate + `publicHarvest`, owner/operator separation, ownership transfer + surrender, a timelock locker owning a program, frozen rules travelling across a transfer |
+| Glue burn | `GlueHookBurn.t.sol` | 9 | B1–B9: held-forever terminal hold (a main that blocks the GlueStick's pull), the Glue burn with a real supply drop, a lying `burn()` dead-routed inside the glue, the unburnable flag's permanent short-circuit, per-asset flag isolation, flushDirect guard, the glueable-main gate (network token and NATIVEWRAP rejected on `initPot` AND `launchPool`, burn intent always legal on an ERC20 main), refused-delivery park + retry, the creation-time `ensureWrapper` (fresh main glued, already-glued main skipped) |
+| LP program | `GlueHookLiquidity.t.sol` | 17 | L1–L12 + L18–L22: normal/advanced entries, full-range sentinel, creation gates, config validation (incl. the native-main rejection at declaration and the per-side share-sum bound), exact gross-referenced harvest split, auto-harvest mins, harvest-first adds, removes, owed backlog + claim, the operator-zero config freeze, surrendered-at-birth, lifecycle solvency, the owner-only harvest gate + `publicHarvest`, owner/operator separation, ownership transfer + surrender, a timelock locker owning a program, frozen rules travelling across a transfer |
 | Compound + carry | `GlueHookCompound.t.sol` | 10 | L13–L17 + L23–L27: compound exact split + conservation, in-swap compound, 100% compound (the carry holds everything), share-sum validation + the exact-100% recipient-less corner, compound solvency dance, multi-round compound growth, carry accumulation + retry drawn down wei-for-wei, one-sided-fee compound skew, zero-fee harvest retrying a standing carry, the carry surviving a config edit |
-| One-tx launch | `GlueHookLaunch.t.sol` | 10 | LA1–LA10: the single-transaction `launchPool` — happy path (launcher becomes admin, pool at the requested price, program owned/configured/seeded, native excess refunded to the wei, `PotOpened` carries the LAUNCHER not the hook), ERC20/ERC20 launch from allowances (+ value-on-tokenless-pool rejection), foreign-hook key rejection, existing-pool rejection, bad-main atomic rollback (no pool, no pot left behind), native-main-burn rejection, config legality + zero-seed rejection, the hook-initialised-outside-launch pool staying inert (no admin spoof), a launched pool fully operational (donate → shield → manual harvest), and surrendered-at-birth through the launch path |
+| One-tx launch | `GlueHookLaunch.t.sol` | 10 | LA1–LA10: the single-transaction `launchPool` — happy path (launcher becomes admin, pool at the requested price, program owned/configured/seeded, native excess refunded to the wei, `PotOpened` carries the LAUNCHER not the hook), ERC20/ERC20 launch from allowances (+ value-on-tokenless-pool rejection), foreign-hook key rejection, existing-pool rejection, bad-main atomic rollback (no pool, no pot left behind), native-main rejection, config legality + zero-seed rejection, the hook-initialised-outside-launch pool staying inert (no admin spoof), a launched pool fully operational (donate → shield → manual harvest), and surrendered-at-birth through the launch path |
 | Gas | `GlueHookGas.t.sol` | 4 | G1–G4: deterministic `gasleft()` measurements behind generous regression ceilings — the one-tx launch vs the three-step path, swap overhead per circumstance (hookless baseline, hooked idle, pump firing, shield firing), the in-swap auto-harvest + compound, and the steady-state entries (donate, manual harvest, add, remove). Source of the numbers in §11 |
 | Mixed decimals | `GlueHookDecimals.t.sol` | 6 | D1–D6: ERC20/ERC20 pools launched at a HUMAN 1:1 price so the raw sqrtPrice carries the whole decimals gap (6/18 and 8/18 pairs, roles both ways) — a 100-unit buy delivers ~100 units in the OTHER side's own raw scale, the pump and shield fire and deliver in correct raw units, the WAD harvest split is exactly conservative over 6-dec raw fee amounts, the compound mints real liquidity from mixed-scale fees, and the pot ledger stays fully backed after a trading burst. V4 and the hook never read `decimals()`; this suite proves the raw-units model end to end |
 | Formal (fuzz) | `GlueHookFormal.t.sol` | 12 | FM1–FM12: pump spend bounds, pump monotonicity, full-absorb parity, shield sanity, live-pump within quote, quote purity, exact split conservation over arbitrary share pairs, compound-within-budget + carry-inclusive conservation over every legal (compound, buyback, burn) triple, owed-ledger exactness through refusal and claim, self-sandwich accounting (extraction ≤ pot spend, every spend converts into bought main, the pump capped by the attacker's own buy), auto-compound monotone growth, global carry conservation across whole harvest sequences — 512 runs each |
-| Buyback split | `GlueHookPotSplit.t.sol` | 14 | SP1–SP10 + NS1–NS4: zero-default parity with the unsplit delivery, the wei-exact three-way carve on the pump's AND the shield's output, the burn-intent single-cascade merge, no-program neutrality, set-time validation (sum bound, native-main burn mirror, exact-100% legality), operator gating + the operator-zero freeze, plain-`addLiquidity` defaults (owner == operator, split off, burns whole on a burn-intent pot), the remove-all-liquidity carry cycle closed with the exact identity `carry' = carry + slice − minted`, the 100%-compound corner — and the never-stop matrix: a refusing recipient parks the rest while the other legs settle, an unburnable main under a burn share holds forever, a hostile native recipient parks while the ETH carry credits and native custody covers `obligationOf(ETH)`, and a re-entering recipient bounces off the transient guard with the carrying swap landing |
-| Live-chain fork | `GlueHookFork.t.sol` | 5 | FK1–FK5: pump, shield, manual harvest + compound, in-swap auto-harvest, and the buyback split settling a live pump (compound carry + dead burn + remainder to a live recipient, wei-exact) against the LIVE deployed PoolManager on a forked real chain — real code, real storage, real gas accounting (verified on Ethereum mainnet `0x0000…8A90` and Tempo `0x3362…7029`); gated on `FORK_RPC_URL` |
+| Buyback split | `GlueHookPotSplit.t.sol` | 14 | SP1–SP10 + NS1–NS4: zero-default parity with the unsplit delivery, the wei-exact three-way carve on the pump's AND the shield's output, the burn-intent single-cascade merge, no-program neutrality, set-time validation (sum bound, native-main rejection at declaration, exact-100% legality), operator gating + the operator-zero freeze, plain-`addLiquidity` defaults (owner == operator, split off, burns whole on a burn-intent pot), the remove-all-liquidity carry cycle closed with the exact identity `carry' = carry + slice − minted`, the 100%-compound corner — and the never-stop matrix: a refusing recipient parks the rest while the other legs settle, a main that blocks the GlueStick's pull holds forever under a burn share, a main Glue refuses to admit is held (and its refused ensure never blocks creation), and a re-entering harvest recipient bounces off the transient guard with the delivery landing |
+| Dynamic-fee rejection | `GlueHookDynamicFee.t.sol` | 4 | DR1–DR4: a key carrying the `0x800000` sentinel is refused on BOTH creation doors — `beforeInitialize` for a direct `PoolManager.initialize` and `launchPool` itself (the PoolManager skips the callback when the hook is the caller) — with nothing half-made left behind (no pool, no pot, value untouched); a static twin of the same shape is untouched, and same-pair pools at adjacent static fees (3000 vs 3001) coexist independently — the fee field as a creation namespace |
+| Live-chain fork | `GlueHookFork.t.sol` | 5 | FK1–FK5: pump, shield, manual harvest + compound, in-swap auto-harvest, and the buyback split settling a live pump (compound carry + Glue burn + remainder to a live recipient, wei-exact) against the LIVE deployed PoolManager on a forked real chain — real code, real storage, real gas accounting (verified on Ethereum mainnet `0x0000…8A90`); gated on `FORK_RPC_URL` |
 
 Test infrastructure (`test/helpers`, `test/mocks`, `test/fixtures`) is fixture-only: the PoolManager
 is etched from its real runtime bytecode, the hook is deployed to an address carrying its real
@@ -476,8 +514,12 @@ pump adds proportionally less), trading buyback aggressiveness for it; the fee c
 The review found no path to: drain a pot at an artificial price (§4.1), double-credit a donation
 (reentrancy guard + measured pull; `test_A5`), settle a one-sided fill (§4.2), brick a pool with an
 oversized pot (reserve bound; §4.1 guard 3), hijack a pot's roles (`test_U4`), re-declare roles
-(`PotAlreadyReady`), steal main through a hostile token or recipient (the cascade holds or parks,
-accounted, and never reverts a swap; `test_A4`, `test_B1`, `test_B3`), drift the harvest split by a
+(`PotAlreadyReady`), steal main through a hostile token or recipient (the delivery holds or parks,
+accounted, and never reverts a swap; `test_A4`, `test_B1`, `test_B3`), fake a burn through a lying
+GlueStick or token (the unglue counts only on the hook's verified balance drop; `test_B2`,
+`test_B3`), block a pool's creation through a hostile GlueStick (the ensure is best-effort;
+`test_B9`, `test_NS3`), sneak a dynamic-fee pool past either creation door (`test_DR1`,
+`test_DR2`), drift the harvest split by a
 wei (§4.6), double-dip a bounced push (`test_A11`), edit rules after the operator role was zeroed
 (`test_L10`, `test_L11`, `test_L22`), move a surrendered program's liquidity (`test_L11`,
 `test_L20`), or exercise another owner's property rights (`test_L19`, `test_L20`, `test_L21`).
@@ -502,15 +544,28 @@ wei (§4.6), double-dip a bounced push (`test_A11`), edit rules after the operat
   may still edit rules. Nobody is ever forced to trade one for the other, and richer custody —
   timelocks, vesting, DAO control — is built by transferring ownership to a contract on top
   (proven by `test_L21_lockerOnTop`).
-- **The terminal hold is deliberate.** A burn-intent token that refuses both its own `burn` and the
-  dead address is held on the hook with no withdrawal path — out of circulation by custody. This is
-  a feature, not stranding: the alternative (any retrieval path) would be a burn that someone can
-  reverse.
+- **The burn is the Glue Protocol's, and the hook trusts it only as far as its own balance.** Every
+  burn is a pure `unglue` (empty collateral list) through the canonical `GLUE_STICK` singleton,
+  accepted only on the hook's verified balance drop. The GlueStick is outside this review's scope;
+  the integration is designed so its worst behaviours degrade, never escalate: a missing, reverting
+  or lying GlueStick turns a burn into a hold and a creation-time ensure into a no-op — it can
+  never fake a burn, revert a swap, or block a pool.
+- **The terminal hold is deliberate.** A burn-intent main whose unglue refuses (Glue won't admit
+  it, or it blocks the pull) is held on the hook with no withdrawal path — out of circulation by
+  custody. This is a feature, not stranding: the alternative (any retrieval path) would be a burn
+  that someone can reverse.
+- **MAIN must be glueable.** `initPot` and `launchPool` reject the network token and `NATIVEWRAP`
+  (the chain's canonical wrapped native, a constructor immutable) as main, because neither can run
+  the Glue burn. Both remain fully legal as SECONDARY — the buying side is unrestricted.
+- **The pool fee is immutable, by refusal.** The hook serves static-fee pools only — a key
+  carrying the dynamic-fee sentinel is rejected on both creation doors — so no operator, admin or
+  hook path can ever move the fee a pool's traders and LPs signed up for. The refusal also turns
+  the fee field into a creation namespace: a million distinguishable static values per pair for
+  otherwise-identical pools.
 - **Refused deliveries are never lost.** A live recipient that bounces a transfer (blocklist,
   reverting `receive()`) parks the main per-pool; anyone may retry through `flushDirect(poolId)`,
   which always pays the pot's *current* recipient. Harvest-split recipients book into the owed
-  ledger instead (folded into the next push, claimable with full gas). A native-main pot can never
-  be set to burn.
+  ledger instead (folded into the next push, claimable with full gas).
 - **Fee-on-transfer secondary** is credited at the measured amount that arrived; a 100%-fee donation
   is refused. **Fee-on-transfer / rebasing MAIN** should be wrapped before use — the shield's
   pool-exact settlement assumes the main that leaves the PoolManager is the main the hook receives.
@@ -524,16 +579,20 @@ wei (§4.6), double-dip a bounced push (`test_A11`), edit rules after the operat
    CREATE address has low 14 bits equal to `REQUIRED_HOOK_FLAGS` (`beforeInitialize | beforeSwap |
    afterSwap | beforeSwapReturnsDelta`). The constructor asserts this, so a wrong address fails at
    deploy time. (Single-chain alternative: `scripts/mine-salt.mjs` for a CREATE2 salt.)
-2. **Deploy per chain** with `scripts/deploy-nonce0.mjs <rpcUrl> <poolManager>`: the `GlueLiquidity`
-   library lands at nonce 0, the hook — its init code linked against that real library address in
-   place of the `foundry.toml` sentinel — at nonce 1, with the single constructor argument
-   `(poolManager)`. Any chain with a V4 PoolManager; both addresses identical everywhere.
+2. **Deploy per chain** with `scripts/deploy-nonce0.mjs <rpcUrl> <poolManager> <nativeWrap>`: the
+   `GlueLiquidity` library lands at nonce 0, the hook — its init code linked against that real
+   library address in place of the `foundry.toml` sentinel — at nonce 1, with the constructor
+   arguments `(poolManager, nativeWrap)`. `<nativeWrap>` is the chain's canonical wrapped native —
+   the WETH9-style wrapper Uniswap's own periphery uses (WETH, WBNB, WPOL, WAVAX…); pass the zero
+   address ONLY on a chain with no spendable native coin. Any chain with a V4 PoolManager; both
+   addresses identical everywhere.
 3. **Launch a pool in ONE transaction** with `launchPool(key, sqrtPriceX96, main, recipient,
    tickLower, tickUpper, liquidity, owner, config)` — initialise + roles + program + seed in a
    single call, the caller becoming the pot admin. (Or run the steps separately: **initialise** a
    pool naming the hook — the initialiser becomes the pot admin — then **`initPot(key, main,
    recipient)`** to declare which currency is defended and where its buybacks go, `address(0)` for
-   buy-and-burn. The roles are irreversible except for the recipient.)
+   buy-and-burn. The roles are irreversible except for the recipient.) The MAIN must be a glueable
+   ERC20 — the network token and `NATIVEWRAP` are rejected; declaring it ensures its glue exists.
 4. **Donate** the secondary to fund the pot. The pump and shield activate the moment the pot is
    non-empty and stand aside whenever it is empty.
 5. **(Optional) verify the venue live** by running the fork suite against the target chain:
@@ -546,15 +605,16 @@ wei (§4.6), double-dip a bounced push (`test_A11`), edit rules after the operat
 ## 10. Reproducing this audit
 
 ```bash
-forge clean && forge test            # 123 tests (128 with FORK_RPC_URL set)
+forge clean && forge test            # 127 tests (132 with FORK_RPC_URL set)
 forge test --match-contract GlueHookInvariant          # PP1–PP6 + walks (bare pool)
 forge test --match-contract GlueHookProgramInvariant   # PI1–PI6 + walk (program armed)
 forge test --match-contract GlueHookFormal             # FM1–FM12, 512 runs each
 forge test --match-contract GlueHookPotSplit           # SP1–SP10 + NS1–NS4, the buyback split
 forge test --match-contract GlueHookLaunch             # LA1–LA10, the one-tx launch
+forge test --match-contract GlueHookDynamicFee         # DR1–DR4, the dynamic-fee rejection
 forge test --match-contract GlueHookGas -vv            # G1–G4, the §11 gas numbers
 FORK_RPC_URL=<rpc> forge test --match-contract GlueHookFork   # FK1–FK5 on a live chain
-forge build --sizes                  # GlueHook 23,465 bytes (under EIP-170) + GlueLiquidity 11,843
+forge build --sizes                  # GlueHook 23,680 bytes (under EIP-170) + GlueLiquidity 12,261
 ```
 
 The invariant depth/runs live in `foundry.toml` (`[profile.default.invariant]`); raise them for a
@@ -574,16 +634,17 @@ compared. Reproduce with `forge test --match-contract GlueHookGas -vv`.
 
 | Path | Execution gas | All-in (incl. 21k base per tx) |
 |---|---:|---:|
-| **`launchPool` — ONE transaction** (initialise + roles + program + seed) | 530,298 | **551,298** |
-| `initialize` | 56,440 | |
-| `initPot` | 53,878 | |
-| `addLiquidityAdvanced` | 404,591 | |
-| Three-step total (3 transactions) | 514,909 | 577,909 |
+| **`launchPool` — ONE transaction** (initialise + roles + program + seed) | 584,865 | **605,865** |
+| `initialize` | 56,588 | |
+| `initPot` (incl. the creation-time Glue ensure) | 81,505 | |
+| `addLiquidityAdvanced` | 406,600 | |
+| Three-step total (3 transactions) | 544,693 | 607,693 |
 
-The one-transaction launch pays ~15k extra execution gas (the launch orchestration) but saves two
-transaction base costs, landing **~27k cheaper all-in** — and it is atomic: a failed step rolls the
+The one-transaction launch pays ~40k extra execution gas (the launch orchestration) but saves two
+transaction base costs, landing **~1.8k cheaper all-in** — and it is atomic: a failed step rolls the
 whole launch back (LA5), where the three-step path can strand a half-configured pool between
-transactions.
+transactions. Both creation paths carry the one-time Glue ensure (`ensureWrapper` on a fresh main —
+the bulk of `initPot`'s cost); a main already glued skips it.
 
 ### 11.2 Swap overhead per circumstance
 
@@ -592,10 +653,10 @@ Measured through the same swap-router shape in every row, so the deltas isolate 
 | Circumstance | Buy | Sell | Hook overhead vs bare V4 |
 |---|---:|---:|---|
 | Bare V4 pool (no hook) | 58,749 | 60,605 | — |
-| Hooked pool, pot EMPTY, no program (idle) | 70,896 | 68,741 | +12,147 buy / +8,136 sell |
-| Pot funded: **pump fires** on the buy | 146,615 | | +87,866 (the pot's own swap + delivery) |
-| Pot funded: **shield fires** on the sell | | 98,922 | +38,317 (pool-exact quote + fill + delivery) |
-| Armed program: **auto-harvest + compound** inside the swap | 169,983 | | +111,234 (collect + split + compound mint) |
+| Hooked pool, pot EMPTY, no program (idle) | 71,985 | 69,830 | +13,236 buy / +9,225 sell |
+| Pot funded: **pump fires** on the buy | 152,597 | | +93,848 (the pot's own swap + Glue delivery) |
+| Pot funded: **shield fires** on the sell | | 102,680 | +42,075 (pool-exact quote + fill + delivery) |
+| Armed program: **auto-harvest + compound** inside the swap | 225,497 | | +166,748 (collect + split + compound mint) |
 
 The idle overhead — the only cost every swap on a hooked pool pays unconditionally — is one storage
 read of the pot record plus the callback plumbing: ~8–12k. The heavy circumstances only ever run on
@@ -606,10 +667,10 @@ instead of reverting the carrying swap.
 
 | Entry | Gas |
 |---|---:|
-| `donate` (native) | 55,888 |
-| Manual `harvest` (collect + split + compound + payouts) | 129,568 |
-| `addProgramLiquidity` (harvest-first add) | 103,142 |
-| `removeProgramLiquidity` (harvest-first remove) | 82,281 |
+| `donate` (native) | 55,910 |
+| Manual `harvest` (collect + split + compound + payouts) | 130,514 |
+| `addProgramLiquidity` (harvest-first add) | 104,407 |
+| `removeProgramLiquidity` (harvest-first remove) | 83,497 |
 
 Numbers move with pool state (tick crossings, cold vs warm slots, whether a compound places both
 legs), so treat them as representative magnitudes, not constants; the suite's assertions are

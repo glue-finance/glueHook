@@ -80,7 +80,7 @@ export function ZeroFeeVisual() {
           <span className="pill hi">no owner</span>
           <span className="pill hi">no admin keys</span>
           <span className="pill hi">no upgrade path</span>
-          <span className="pill teal">source verified on 23 chains</span>
+          <span className="pill teal">source verified on 18 chains</span>
         </div>
       </div>
     </Card>
@@ -382,7 +382,7 @@ export function IntegrateVisual() {
         {"\n\n"}
         <span className="c">{"// same address on every chain"}</span>
         {"\n"}
-        <span className="t">0xb216070c3509047ea597E2E626A29cea427a60C8</span>
+        <span className="t">0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</span>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <span className="pill hi">contract-to-contract</span>

@@ -16,7 +16,7 @@ export function WhatIs() {
         <Hookmark /> is a free, open-source Uniswap V4 hook that gives any pool an{" "}
         <B>automatic buyback machine</B> and <B>self-compounding liquidity</B> — running fully
         on-chain, inside the trades themselves. No price oracles. No keeper bots. No admin keys.
-        One contract, at the same address on 23 networks.
+        One contract, at the same address on 18 networks.
       </Lead>
 
       <Stats
@@ -372,8 +372,8 @@ export function Networks() {
       </Lead>
 
       <Code title="canonical addresses — every network, no exceptions">
-        GlueHook{"       "}<span className="g">0xb216070c3509047ea597E2E626A29cea427a60C8</span>{"\n"}
-        GlueLiquidity{"  "}<span className="g">0x26CD66aDec6176c11f894A9DE5bC504235c90241</span>
+        GlueHook{"       "}<span className="g">0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</span>{"\n"}
+        GlueLiquidity{"  "}<span className="g">0x74EcCF857176CB538AAB1642A972444857f7860F</span>
       </Code>
 
       <AddressesTable />
@@ -406,7 +406,7 @@ export function Networks() {
       <H2>Verifying you&apos;re talking to the real hook</H2>
       <Steps
         items={[
-          { title: "Check the address", body: <>It must be exactly <C>0xb216070c3509047ea597E2E626A29cea427a60C8</C> — on every network.</> },
+          { title: "Check the address", body: <>It must be exactly <C>0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</C> — on every network.</> },
           { title: "Check the flag bits", body: <>The low 14 bits must equal <C>0x20C8</C>.</> },
           { title: "Check the source", body: <>Every deployment is source-verified; diff it against the repository if you like.</> },
         ]}

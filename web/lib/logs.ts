@@ -81,7 +81,7 @@ type RawLog = {
  * one-pool query into "stream me every log this contract ever emitted".
  * Speaking the wire format directly keeps the filter on the node.
  */
-function makeGetRange(client: PublicClient, address: Address, topics: (Hex | Hex[] | null)[]) {
+function makeGetRange(client: PublicClient, address: Address | Address[], topics: (Hex | Hex[] | null)[]) {
   return async (from: bigint, to: bigint): Promise<Log[]> => {
     const raw = (await client.request({
       method: "eth_getLogs",
@@ -130,7 +130,8 @@ function effectiveCap(maxRange: bigint | undefined): bigint {
 export async function scanLogs(
   clients: PublicClient | PublicClient[],
   params: {
-    address: Address;
+    /** one contract or a list — eth_getLogs takes an address OR-list natively */
+    address: Address | Address[];
     /**
      * Raw eth_getLogs topics. Position 0 accepts an ARRAY (topic0 OR-list =
      * "any of these events"), later positions filter indexed args. Passing
@@ -167,10 +168,10 @@ export async function scanLogs(
 
   // one fetcher per endpoint, dealt round-robin — by the fan-out AND by the
   // sequential path. Pinning the sequential path to the first endpoint let
-  // one flaky primary stall the whole scan (Monad's dRPC gateway sometimes
-  // routes to an upstream that answers -32601 "eth_getLogs not available")
-  // while healthy siblings sat idle; rotating also means the retry after a
-  // failure lands on a DIFFERENT endpoint wherever there is more than one.
+  // one flaky primary stall the whole scan (some public gateways route
+  // intermittently to an upstream that answers -32601 "eth_getLogs not
+  // available") while healthy siblings sat idle; rotating also means the retry
+  // after a failure lands on a DIFFERENT endpoint wherever there is more than one.
   const fetchers = pool.map((c) => makeGetRange(c, address, topics));
   let turn = 0;
   const nextFetcher = () => fetchers[turn++ % fetchers.length];

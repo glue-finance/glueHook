@@ -43,15 +43,16 @@ export function usePoolList(net: Net) {
 // Live pot + program state
 // ---------------------------------------------------------------------------
 
-export function usePot(net: Net, poolId: Hex | null) {
+export function usePot(net: Net, poolId: Hex | null, hook?: Address) {
+  const at = hook ?? net.hook; // a V1 pool's pot lives on the V1 hook
   return useQuery({
-    queryKey: ["pot", net.chain.id, poolId],
+    queryKey: ["pot", net.chain.id, poolId, at],
     enabled: !!poolId,
     refetchInterval: 12_000,
     queryFn: async (): Promise<Pot> => {
       const client = clientForNet(net);
       return (await client.readContract({
-        address: net.hook,
+        address: at,
         abi: glueHookAbi,
         functionName: "potOf",
         args: [poolId!],
@@ -60,15 +61,16 @@ export function usePot(net: Net, poolId: Hex | null) {
   });
 }
 
-export function useProgram(net: Net, poolId: Hex | null) {
+export function useProgram(net: Net, poolId: Hex | null, hook?: Address) {
+  const at = hook ?? net.hook; // a V1 pool's program lives on the V1 hook
   return useQuery({
-    queryKey: ["program", net.chain.id, poolId],
+    queryKey: ["program", net.chain.id, poolId, at],
     enabled: !!poolId,
     refetchInterval: 12_000,
     queryFn: async (): Promise<Program> => {
       const client = clientForNet(net);
       return (await client.readContract({
-        address: net.hook,
+        address: at,
         abi: glueHookAbi,
         functionName: "programOf",
         args: [poolId!],
@@ -127,7 +129,8 @@ export function useQuoteCurves(
         pumpSizes.map(async (s) => {
           try {
             const [spend, out] = (await client.readContract({
-              address: net.hook,
+              // the key names its own hook — V1 pools quote off the V1 hook
+              address: key!.hooks as Address,
               abi: glueHookAbi,
               functionName: "quotePump",
               args: [key!, s],
@@ -142,7 +145,7 @@ export function useQuoteCurves(
         shieldSizes.map(async (s) => {
           try {
             const [absorbed, paid] = (await client.readContract({
-              address: net.hook,
+              address: key!.hooks as Address,
               abi: glueHookAbi,
               functionName: "quoteShield",
               args: [key!, -s],
@@ -184,6 +187,7 @@ export function useFeed(net: Net, pool: RegisteredPool | null) {
       try {
         const evs = await fetchPoolEvents(
           net,
+          pool!.hook, // the pool's own deployment — V1 events live on V1
           pool!.poolId,
           pool!.block,
           first

@@ -107,7 +107,6 @@ const NATIVE_LOGOS: Record<string, string> = {
   POL: `${TW}/polygon/info/logo.png`,
   MATIC: `${TW}/polygon/info/logo.png`,
   AVAX: `${TW}/avalanchec/info/logo.png`,
-  CELO: `${TW}/celo/info/logo.png`,
   OKB: `${TW}/okexchain/info/logo.png`,
 };
 
@@ -120,14 +119,12 @@ const TW_CHAIN: Record<string, string> = {
   bnb: "smartchain",
   polygon: "polygon",
   avalanche: "avalanchec",
-  celo: "celo",
-  blast: "blast",
 };
 
 /**
  * ALL logo candidates for an address, best first. The icon component walks
  * the list on load errors, so a token missing from the Uniswap lists (every
- * token on Robinhood/MegaETH/Tempo…) still resolves through TrustWallet's
+ * token on Robinhood/MegaETH…) still resolves through TrustWallet's
  * repo or DexScreener's token-image CDN.
  */
 export function useTokenLogos(net: Net, addr: Address | null | undefined): string[] {

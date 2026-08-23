@@ -40,8 +40,12 @@ import {IPoolManagerMin} from "../libs/GluedV4Core.sol";
  *         └───────────┴─────────────────────────────────────────────────────────────────────────────┘
  *
  *         Either currency may be main, so the hook is pair-agnostic: an ETH-quoted token is one
- *         configuration among many, not a requirement. The one asymmetry: a NATIVE main (the network
- *         token) cannot be burned, so its pot must always name a live recipient.
+ *         configuration among many, not a requirement. The one constraint: MAIN must be GLUEABLE —
+ *         never the network token and never the chain's canonical wrapped native (NATIVEWRAP) —
+ *         because a BURN is the Glue Protocol's own: a pure `unglue` through the GLUE_STICK
+ *         singleton, destroying the supply in-protocol and concentrating the glue's backing for
+ *         every remaining holder. The hook never destroys supply itself; a main whose unglue
+ *         refuses is held on the hook FOREVER instead (custody IS the burn).
  *
  *         TWO MECHANICS, ONE POT
  *
@@ -86,8 +90,8 @@ interface IGlueHook {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     /// @notice A hooked pool's buyback pot.
-    /// @dev `configured` (not a zero-address test) is the liveness flag, because a legal `main` may be
-    ///      `address(0)` when native currency is the asset being defended.
+    /// @dev `configured` is the liveness flag. A pot's `main` is always a glueable ERC20 (never the
+    ///      network token, never NATIVEWRAP — {initPot} enforces it); its `secondary` may be native.
     struct Pot {
         // Who may configure the pot and move the recipient: the address that initialised the pool
         address admin;
@@ -95,9 +99,8 @@ interface IGlueHook {
         address main;
         // The buyback currency (the pool's other side); the only asset this pot ever holds
         address secondary;
-        // Where bought / absorbed main is delivered. `address(0)` MEANS BURN: the burn cascade runs
-        // (the token's own burn → `0xdead` → held forever) instead of a plain
-        // transfer. A native-main pot can never carry it (the network token cannot be burned).
+        // Where bought / absorbed main is delivered. `address(0)` MEANS BURN: a pure Glue unglue
+        // through the GLUE_STICK (falling through to held-forever) runs instead of a plain transfer.
         address recipient;
         // True once {initPot} has run; until then the hook is completely passive on this pool
         bool configured;
@@ -125,9 +128,7 @@ interface IGlueHook {
     ///      REST follows the pot's recipient exactly as an unsplit delivery would (a live address
     ///      is delivered to, `address(0)` burns). The two shares must sum to ≤ 100%; both default
     ///      to zero, which reproduces the unsplit behaviour bit-for-bit. A pool with NO program
-    ///      cannot compound, so its pot output is always delivered whole. `potBurnShareWad` must
-    ///      be zero when main is the network token (it cannot be burned) — a burn-intent
-    ///      remainder needs no burn share anyway, since the rest already burns.
+    ///      cannot compound, so its pot output is always delivered whole.
     ///
     ///      THE COMPOUND CARRY. The compound is a mint ATTEMPT at the live price: whichever side
     ///      binds caps it, so part of the budget may not fit this time. Whatever the mint does not
@@ -138,8 +139,8 @@ interface IGlueHook {
     ///      harvests and deliveries split; nothing already split or carried is re-touched.
     ///
     ///      Shares are WAD (1e18 = 100%). A side whose two shares sum below 100% MUST name a live
-    ///      recipient (below-100% means a remainder can exist). `burnShareWad` must be zero when
-    ///      main is the network token (it cannot be burned). `minMain` / `minSecondary` arm the
+    ///      recipient (below-100% means a remainder can exist). A burn share is always legal: the
+    ///      main is glueable by construction. `minMain` / `minSecondary` arm the
     ///      AUTO-harvest: a swap harvests when either side's pending fees reach its min;
     ///      `type(uint256).max` disarms a side. The same split runs on the manual {harvest}
     ///      whatever the mins say — OWNER-ONLY unless `publicHarvest` opens it (the auto-harvest
@@ -154,8 +155,7 @@ interface IGlueHook {
         // WAD share of the pot's OUTPUT (pump + shield main) credited to the compound carry
         // (+ potBurn ≤ 100%; zero without effect when the pool has no program)
         uint64 potCompoundShareWad;
-        // WAD share of the pot's OUTPUT routed through the burn cascade (+ potCompound ≤ 100%;
-        // must be zero on a native main)
+        // WAD share of the pot's OUTPUT routed through the burn cascade (+ potCompound ≤ 100%)
         uint64 potBurnShareWad;
         // True opens the manual {harvest} to anyone; false keeps it owner-only
         bool publicHarvest;
@@ -232,9 +232,9 @@ interface IGlueHook {
         // poolId => the subset of `parked` (in that pool's main) headed for a LIVE recipient,
         // retryable through {flushDirect}
         mapping(bytes32 => uint256) parkedDirect;
-        // asset => burn-intent main that is neither burnable nor dead-sendable, held FOREVER
+        // asset => burn-intent main whose Glue unglue refused, held FOREVER
         mapping(address => uint256) held;
-        // asset => true once both burn probes failed; later burn intent settles straight to `held`
+        // asset => true once the unglue probe failed; later burn intent settles straight to `held`
         mapping(address => bool) unburnable;
         // recipient => asset => harvest legs a refused push booked, claimable through {claim}
         mapping(address => mapping(address => uint256)) owed;
@@ -248,11 +248,12 @@ interface IGlueHook {
     enum Delivery {
         // Sent straight to the pot's live recipient
         DIRECT,
-        // Burned through the token's own `burn(amount)`
+        // Burned through the Glue Protocol: a pure `unglue` (empty collateral list) through the
+        // GLUE_STICK, verified by the hook's own balance drop
         BURNED,
-        // Transferred to `0xdead`
+        // RESERVED (kept for ABI stability): the pre-Glue `0xdead` route, never emitted
         DEAD,
-        // A token that is neither burnable nor dead-sendable: held on the hook FOREVER, with no
+        // A main whose Glue unglue refused: held on the hook FOREVER, with no
         // withdrawal path — out of circulation by custody ({heldOf})
         HELD,
         // A refused live-recipient delivery, parked on the hook and retryable via {flushDirect}
@@ -309,8 +310,8 @@ interface IGlueHook {
 
     /// @notice Main left the hook through the delivery/burn cascade.
     /// @param poolId The pool identifier.
-    /// @param to Where it went (the recipient, the glue it was burned through, `0xdead`, or the hook
-    ///        itself when parked or burned natively).
+    /// @param to Where it went (the recipient, the GLUE_STICK it was unglued through, or the hook
+    ///        itself when parked or held).
     /// @param amount Amount of main.
     /// @param mode Which leg of the cascade succeeded.
     event Delivered(bytes32 indexed poolId, address indexed to, uint256 amount, Delivery mode);
@@ -406,9 +407,9 @@ interface IGlueHook {
     error BadDonation();
     /// @notice A quote and its execution disagreed, so the operation was abandoned.
     error QuoteMismatch();
-    /// @notice A program config is invalid: a side's shares summing above 100%, a burn share on a
-    ///         native main, a value-bearing leg without a live recipient, or a malformed liquidity
-    ///         request.
+    /// @notice A program config or key is invalid: a side's shares summing above 100%, a
+    ///         value-bearing leg without a live recipient, a malformed liquidity request, or a
+    ///         DYNAMIC-FEE pool key (this hook only serves static-fee pools).
     error BadConfig();
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -419,11 +420,13 @@ interface IGlueHook {
      * @notice Declare a hooked pool's roles. One-shot, and only the pool's initialiser may call it.
      * @dev Until this runs the hook does nothing on the pool: no shield, no pump, and {donate} reverts.
      *      `main` must be one of the key's two currencies; the other becomes `secondary` automatically.
-     *      When `main` is the NETWORK TOKEN the recipient must be a live address — the network token
-     *      cannot be burned, so burn intent (`address(0)`) is rejected.
+     *      `main` must be GLUEABLE — never the network token and never NATIVEWRAP (the chain's
+     *      canonical wrapped native), because every burn is a pure Glue unglue. The declaration
+     *      also ensures the main's glue exists (GLUE_STICK `ensureWrapper`, best effort: a failure
+     *      never blocks the pool, later burns just settle to the held ledger).
      * @param key The pool key (must already be initialised through this hook).
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn (ERC20 main only).
+     * @param recipient Where bought / absorbed main goes; `address(0)` means burn.
      */
     function initPot(IPoolManagerMin.PoolKey calldata key, address main, address recipient) external;
 
@@ -433,7 +436,8 @@ interface IGlueHook {
      * @dev The caller becomes the pot admin (exactly as if they had called `PoolManager.initialize`
      *      themselves), then the {initPot} and {addLiquidityAdvanced} bodies run with the same
      *      validation, events and funding rules as the standalone entries: `key.hooks` must be this
-     *      hook, `main` one of the key's two currencies, a native-main pot must name a live recipient,
+     *      hook, `main` one of the key's two currencies and glueable (never the network token,
+     *      never NATIVEWRAP — its glue is ensured best-effort at declaration),
      *      the config's per-side shares must fit, and the seed liquidity settles from the caller — an
      *      ERC20 side from their allowance to this hook, a native side (always `currency0`) from
      *      `msg.value` with the unused excess refunded. Reverts if the pool already exists. Pools that
@@ -441,7 +445,7 @@ interface IGlueHook {
      * @param key The pool key (must name this hook).
      * @param sqrtPriceX96 The pool's initial sqrt price, Q64.96.
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn (ERC20 main only).
+     * @param recipient Where bought / absorbed main goes; `address(0)` means burn.
      * @param tickLower Lower tick, `(0,0)` = full range.
      * @param tickUpper Upper tick.
      * @param liquidity Liquidity units to mint as the program's seed.
@@ -464,8 +468,8 @@ interface IGlueHook {
 
     /**
      * @notice Move where a pot delivers the main it buys.
-     * @dev Admin-only. `address(0)` means burn (runs the burn cascade); any other value is a literal
-     *      delivery target. A native-main pot can never be pointed at burn.
+     * @dev Admin-only. `address(0)` means burn (a pure Glue unglue); any other value is a literal
+     *      delivery target.
      * @param poolId The pool identifier.
      * @param recipient The new recipient (`address(0)` = burn).
      */
@@ -513,10 +517,10 @@ interface IGlueHook {
     /// @return amount Parked amount, summed across pools.
     function parkedOf(address asset) external view returns (uint256 amount);
 
-    /// @notice Burn-intent main that is neither burnable nor dead-sendable, held here FOREVER.
+    /// @notice Burn-intent main whose Glue unglue refused, held here FOREVER.
     /// @dev The hook's terminal sink: there is no withdrawal path, so custody IS the burn — the amount
     ///      is out of circulation as surely as a `0xdead` balance. Once an asset lands here it is
-    ///      internally flagged unburnable and its burn probes are never run again.
+    ///      internally flagged unburnable and the unglue is never attempted again.
     /// @param asset The main currency.
     /// @return amount Held amount.
     function heldOf(address asset) external view returns (uint256 amount);
@@ -651,10 +655,10 @@ interface IGlueHook {
     /**
      * @notice Replace the program's split rules. Operator only (impossible once the operator role
      *         was set to `address(0)`).
-     * @dev Validated like the advanced entry: each side's shares sum to at most 100%, no burn share
-     *      on a native main, a live recipient behind every leg that can carry value. An edit only
-     *      shapes FUTURE harvests — nothing already split or carried is re-touched, and the standing
-     *      compound carry keeps retrying under the new rules.
+     * @dev Validated like the advanced entry: each side's shares sum to at most 100% and a live
+     *      recipient stands behind every leg that can carry value. An edit only shapes FUTURE
+     *      harvests — nothing already split or carried is re-touched, and the standing compound
+     *      carry keeps retrying under the new rules.
      * @param poolId The pool identifier.
      * @param config The new split rules.
      */

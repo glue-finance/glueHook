@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-const HOOK = "0xb216070c3509047ea597E2E626A29cea427a60C8";
+const HOOK = "0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8";
 
 /** Hero chip for the canonical hook address: live dot, shine sweep, click-to-copy. */
 export function HookChip() {

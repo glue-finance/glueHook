@@ -12,6 +12,7 @@ pragma solidity ^0.8.35;
 import {GluedV4Core, IPoolManagerMin} from "./GluedV4Core.sol";
 import {GluedMath} from "./GluedMath.sol";
 import {IGlueHook} from "../interfaces/IGlueHook.sol";
+import {IGlueStickMin} from "../interfaces/IGlueStickMin.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
@@ -80,8 +81,10 @@ library GlueLiquidity {
     /// @dev Mirror of {IGlueHook.FlushedDirect}: emitted from the hook's address under delegatecall.
     event FlushedDirect(bytes32 indexed poolId, address indexed to, uint256 amount);
 
-    /// @dev The canonical dead address, the burn cascade's second leg (mirror of the hook's).
-    address private constant DEAD_ADDRESS = 0x000000000000000000000000000000000000dEaD;
+    /// @dev The Glue Protocol's GlueStick singleton (mirror of the hook's {GlueHook.GLUE_STICK}):
+    ///      the SAME address on every chain. Every burn leg is a pure `unglue` through it, and pot
+    ///      creation ensures the main's glue exists through it (best effort).
+    address private constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
 
     /// @dev The hook's transient PAYER slot: `keccak256("GlueHook.payer")`. While set — only ever
     ///      around a liquidity add's unlock — the hook's `_transferToken` settles ERC20 legs straight
@@ -96,19 +99,24 @@ library GlueLiquidity {
     /**
      * @notice The one-shot role declaration (the hook's {IGlueHook-initPot} body). Admin-gated
      *         (`msg.sender` is the original caller under delegatecall), one of the pool's own
-     *         currencies becomes MAIN and the other SECONDARY; a native main may never point at burn.
+     *         currencies becomes MAIN and the other SECONDARY. MAIN must be GLUEABLE — never the
+     *         network token and never the chain's canonical wrapped native — because every burn is
+     *         a pure Glue unglue; the declaration also ensures the main's glue exists (best
+     *         effort: a refusal never blocks the pool, later burns just settle to the held ledger).
      * @param p The pool's pot.
      * @param key The pool key.
      * @param id The pool identifier.
      * @param main The currency to defend.
      * @param recipient The delivery target (`address(0)` = burn).
+     * @param nativeWrap The chain's canonical wrapped native (the hook's {GlueHook.NATIVEWRAP}).
      */
     function initPot(
         IGlueHook.Pot storage p,
         IPoolManagerMin.PoolKey calldata key,
         bytes32 id,
         address main,
-        address recipient
+        address recipient,
+        address nativeWrap
     ) external {
         // A pool that never ran through the hook's `beforeInitialize` has no admin and no pot
         if (p.admin == address(0)) revert IGlueHook.PotNotReady();
@@ -117,23 +125,35 @@ library GlueLiquidity {
         if (p.configured) revert IGlueHook.PotAlreadyReady();
         // Main must be one of the pool's own currencies; the other side becomes the buyback currency
         if (main != key.currency0 && main != key.currency1) revert IGlueHook.BadRoles();
-        // The network token cannot be burned, so a native-main pot must name a live delivery target
-        if (main == address(0) && recipient == address(0)) revert IGlueHook.BadRoles();
+        // MAIN must be glueable: the burn path is Glue's unglue, and neither the network token nor
+        // its canonical wrapper can ever run it (Glue rejects the wrapper by design). On a chain
+        // with no wrapped native, `nativeWrap` is `address(0)` — already covered by the first test.
+        if (main == address(0) || main == nativeWrap) revert IGlueHook.BadRoles();
 
         address secondary = main == key.currency0 ? key.currency1 : key.currency0;
         p.main = main;
         p.secondary = secondary;
-        // `address(0)` is stored verbatim and MEANS "burn": the burn cascade (native burn → dead →
-        // held forever) runs instead of a plain transfer. Any other value is a literal delivery target.
+        // `address(0)` is stored verbatim and MEANS "burn": a pure Glue unglue (falling through to
+        // held-forever) runs instead of a plain transfer. Any other value is a literal delivery target.
         p.recipient = recipient;
         p.configured = true;
+
+        // Best-effort glue: make sure the main's wrapper exists so burns route through Glue from
+        // the first swap. Both calls are tolerated failures — a chain without the GlueStick or a
+        // main Glue refuses to admit never blocks the pool; its burns settle to the held ledger.
+        try IGlueStickMin(GLUE_STICK).isStickyAsset(main) returns (bool isSticky, address) {
+            if (!isSticky) {
+                try IGlueStickMin(GLUE_STICK).ensureWrapper(main) returns (address) {} catch {}
+            }
+        } catch {}
 
         emit PotInitialized(id, main, secondary, recipient);
     }
 
     /**
      * @notice Move the pot's delivery target (the hook's {IGlueHook-setRecipient} body).
-     *         Admin-gated; a native-main pot can never be pointed at burn.
+     *         Admin-gated; `address(0)` restores the burn behaviour (a main is always glueable —
+     *         {initPot} enforced it — so burn intent is always a legal target).
      * @param p The pool's pot.
      * @param poolId The pool identifier.
      * @param recipient The new target (`address(0)` restores the burn behaviour).
@@ -142,8 +162,6 @@ library GlueLiquidity {
         // Only a live pot has a recipient to move
         if (!p.configured) revert IGlueHook.PotNotReady();
         if (msg.sender != p.admin) revert IGlueHook.NotAllowed();
-        // The network token cannot be burned, so a native-main pot can never be pointed at burn
-        if (recipient == address(0) && p.main == address(0)) revert IGlueHook.BadRoles();
 
         p.recipient = recipient;
         emit RecipientSet(poolId, recipient);
@@ -157,18 +175,17 @@ library GlueLiquidity {
      * @notice Validate a split config and write it into the program. Every share is a fraction of
      *         the GROSS fees of its side, so legality is per side: the two shares that can claim a
      *         side (`compound + buyback` on the secondary, `compound + burn` on the main) must sum
-     *         to at most 100%; a native main carries no burn share (the network token cannot be
-     *         burned — the mirror of the pot's own rule); and a side whose shares sum below 100%
-     *         must name a live recipient, because a remainder can exist there.
+     *         to at most 100%, and a side whose shares sum below 100% must name a live recipient,
+     *         because a remainder can exist there. A burn share is always legal: {initPot}
+     *         guaranteed the main is glueable, so the Glue burn path is always runnable.
      * @dev A config edit only shapes FUTURE harvests: nothing already split or carried is re-touched.
      * @param g The pool's program.
-     * @param main The pot's main currency (`address(0)` = native).
      * @param cfg The split rules to validate and store.
      */
-    function applyConfig(IGlueHook.Program storage g, address main, IGlueHook.ProgramConfig memory cfg)
+    function applyConfig(IGlueHook.Program storage g, IGlueHook.ProgramConfig memory cfg)
         external
     {
-        _applyConfig(g, main, cfg);
+        _applyConfig(g, cfg);
     }
 
     /**
@@ -205,24 +222,21 @@ library GlueLiquidity {
     }
 
     /// @dev {applyConfig}'s body, shared with {createProgram}.
-    function _applyConfig(IGlueHook.Program storage g, address main, IGlueHook.ProgramConfig memory cfg)
+    function _applyConfig(IGlueHook.Program storage g, IGlueHook.ProgramConfig memory cfg)
         private
     {
         uint256 secClaim = uint256(cfg.compoundShareWad) + cfg.buybackShareWad;
         uint256 mainClaim = uint256(cfg.compoundShareWad) + cfg.burnShareWad;
         if (secClaim > PRECISION || mainClaim > PRECISION) revert IGlueHook.BadConfig();
-        if (cfg.burnShareWad != 0 && main == address(0)) revert IGlueHook.BadConfig();
         if (secClaim < PRECISION && cfg.secondaryRecipient == address(0)) revert IGlueHook.BadConfig();
         if (mainClaim < PRECISION && cfg.mainRecipient == address(0)) revert IGlueHook.BadConfig();
 
         // THE BUYBACK SPLIT: the pot's output is carved like a fee side — compound + burn ≤ 100%,
-        // the exact rest following the pot's recipient — and a native main still can never burn.
-        // No recipient rule here: the remainder's destination is the POT's recipient, which always
-        // has defined semantics (a live address delivers, `address(0)` burns — and a native-main
-        // pot can never carry `address(0)`, so a native remainder is always deliverable).
+        // the exact rest following the pot's recipient. No recipient rule here: the remainder's
+        // destination is the POT's recipient, which always has defined semantics (a live address
+        // delivers, `address(0)` burns — always runnable on an initPot-validated main).
         uint256 potClaim = uint256(cfg.potCompoundShareWad) + cfg.potBurnShareWad;
         if (potClaim > PRECISION) revert IGlueHook.BadConfig();
-        if (cfg.potBurnShareWad != 0 && main == address(0)) revert IGlueHook.BadConfig();
 
         g.buybackShareWad = cfg.buybackShareWad;
         g.burnShareWad = cfg.burnShareWad;
@@ -292,7 +306,7 @@ library GlueLiquidity {
         g.operator = owner;
         g.tickLower = tickLower;
         g.tickUpper = tickUpper;
-        _applyConfig(g, p.main, cfg);
+        _applyConfig(g, cfg);
 
         emit ProgramCreated(id, owner, tickLower, tickUpper);
         emit ProgramConfigured(id, cfg);
@@ -570,8 +584,7 @@ library GlueLiquidity {
                 burnLeg += potBurn;
                 potOut -= potBurn;
             }
-            // A burn-intent pot merges the exact rest into the frame's single cascade walk (a
-            // native main can never be here — its pot always names a live recipient)
+            // A burn-intent pot merges the exact rest into the frame's single burn walk
             if (p.recipient == address(0)) {
                 burnLeg += potOut;
                 potOut = 0;
@@ -637,32 +650,30 @@ library GlueLiquidity {
     }
 
     /**
-     * @dev The burn cascade, never able to revert the carrying swap. In order: the token's own
-     *      `burn(amount)` (accepted only on a verified balance drop), a transfer to `0xdead`, then
-     *      the amount is HELD on the hook FOREVER — no withdrawal path exists, so custody IS the
-     *      burn. The first fall-through flags the asset unburnable, so later burns of it skip the
-     *      probes and settle straight to the held ledger.
+     * @dev The burn, never able to revert the carrying swap. THE burn is the Glue Protocol's own:
+     *      a pure `unglue` through the GlueStick with an EMPTY collateral list — the supply is
+     *      pulled from the hook and destroyed inside the protocol (which runs its own burn /
+     *      dead-route fallbacks), redeeming nothing and concentrating the glue's backing for every
+     *      remaining holder. The hook never destroys supply itself. Accepted only on a verified
+     *      balance drop; a refusal flags the asset unburnable, so later burns of it skip the probe
+     *      and settle straight to the held ledger — HELD on the hook FOREVER, no withdrawal path
+     *      exists, so custody IS the burn.
      */
     function _burn(IGlueHook.Ledgers storage L, bytes32 id, address asset, uint256 amount) private {
-        // A known non-burnable skips the probes: straight to the terminal hold
+        // A known non-glueable skips the probe: straight to the terminal hold
         if (!L.unburnable[asset]) {
-            // 1. The token's own burn (cheapest true supply reduction), verified by a balance drop
-            if (_tryBurn(asset, amount)) {
-                emit Delivered(id, asset, amount, IGlueHook.Delivery.BURNED);
+            // 1. The Glue burn (a fresh main lazy-glues inside `unglue` itself if the creation-time
+            //    ensure was ever missed), verified by the hook's own balance drop
+            if (_tryUnglue(asset, amount)) {
+                emit Delivered(id, GLUE_STICK, amount, IGlueHook.Delivery.BURNED);
                 return;
             }
 
-            // 2. Dead route
-            if (_tryTransfer(asset, DEAD_ADDRESS, amount)) {
-                emit Delivered(id, DEAD_ADDRESS, amount, IGlueHook.Delivery.DEAD);
-                return;
-            }
-
-            // Both probes failed: never run them again for this asset
+            // The probe failed: never run it again for this asset
             L.unburnable[asset] = true;
         }
 
-        // 3. Held forever — the terminal sink
+        // 2. Held forever — the terminal sink
         L.held[asset] += amount;
         emit Delivered(id, address(this), amount, IGlueHook.Delivery.HELD);
     }
@@ -702,14 +713,30 @@ library GlueLiquidity {
         (ok, ) = to.call{value: amount, gas: 30_000}("");
     }
 
-    /// @dev The token's own `burn(uint256)`, accepted only when the hook's balance really fell by
-    ///      `amount` — a token that reports success without moving anything falls through.
-    function _tryBurn(address token, uint256 amount) private returns (bool ok) {
+    /// @dev The pure Glue burn: an exact-amount approval to the GlueStick, then `unglue` with an
+    ///      EMPTY collateral list. Accepted only when the hook's balance really fell by `amount` —
+    ///      a codeless GlueStick (a chain the Glue Protocol never reached) or a lying token falls
+    ///      through instead of counting as burned. Every leg is tolerant: a failure reports false
+    ///      (the caller settles to the held ledger) and never reverts the carrying swap.
+    function _tryUnglue(address token, uint256 amount) private returns (bool ok) {
         uint256 balBefore = IERC20(token).balanceOf(address(this));
         if (balBefore < amount) return false;
-        (bool success, ) = token.call(abi.encodeWithSignature("burn(uint256)", amount));
-        if (!success) return false;
-        return IERC20(token).balanceOf(address(this)) <= balBefore - amount;
+
+        // Exact-amount approval, tolerant of odd ERC20s (missing return data is accepted)
+        (bool aOk, bytes memory aData) = token.call(abi.encodeCall(IERC20.approve, (GLUE_STICK, amount)));
+        if (!(aOk && (aData.length == 0 || (aData.length >= 32 && abi.decode(aData, (bool)))))) return false;
+
+        // Pure burn: empty collaterals redeem nothing, the pulled supply is destroyed in-protocol
+        (bool s, ) = GLUE_STICK.call(
+            abi.encodeCall(IGlueStickMin.unglue, (token, new address[](0), amount, address(this), false))
+        );
+
+        ok = s && IERC20(token).balanceOf(address(this)) <= balBefore - amount;
+        if (!ok) {
+            // Clear the dangling allowance; its own failure is ignorable (the GlueStick only ever
+            // pulls inside the hook's own unglue call, so a stale allowance moves nothing)
+            (aOk, ) = token.call(abi.encodeCall(IERC20.approve, (GLUE_STICK, 0)));
+        }
     }
 
     /// @dev ERC20 transfer that reports failure instead of reverting, so the cascade can move on.

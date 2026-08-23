@@ -193,8 +193,9 @@ contract GlueHookLaunch is GlueHookFixture {
         assertEq(pump.potOf(id).admin, address(0), "no pot");
     }
 
-    /// @dev LA6 -- a native main can never point at burn, launch path included.
-    function test_LA6_nativeMainBurnRejected() public {
+    /// @dev LA6 -- a native main can never exist at all (the burn path is Glue's unglue, which the
+    ///      network token cannot run), launch path included.
+    function test_LA6_nativeMainRejected() public {
         IPoolManagerMin.PoolKey memory key = _ethKey();
         vm.prank(alice);
         vm.expectRevert(IGlueHook.BadRoles.selector);

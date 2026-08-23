@@ -92,17 +92,17 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
  *         the BUYBACK SPLIT (operator-set in the program config, both shares zero by default):
  *         `potCompoundShareWad` joins the program's main-side compound carry — buy pressure becoming
  *         the pool's own liquidity at the next harvest's mint — `potBurnShareWad` joins the burn
- *         cascade, and the EXACT rest follows the pot's recipient as an unsplit delivery would. A
- *         live recipient is delivered to directly — a bounded-gas send for native main, a plain
- *         transfer for an ERC20 — and a refusal parks the main here, retryable any time through
- *         {flushDirect}. A pot whose main is the NETWORK TOKEN must always name a live recipient,
- *         because the network token cannot be burned ({initPot}/{setRecipient} enforce it, and the
- *         split's burn share is rejected on it too). A burn runs a cascade that can never revert a
- *         swap: the token's own `burn` (verified by a balance drop), then a transfer to `0xdead`,
- *         then — for a token that is neither burnable nor dead-sendable — the amount is HELD on the
- *         hook FOREVER. There is no withdrawal path, so custody IS the burn: a held balance is out of
- *         circulation as surely as a `0xdead` balance. The first fall-through flags the asset
- *         {unburnable}, so later burns of it skip the probes and settle straight to the held ledger.
+ *         path, and the EXACT rest follows the pot's recipient as an unsplit delivery would. A
+ *         live recipient is delivered to directly (a plain transfer that never reverts the swap)
+ *         and a refusal parks the main here, retryable any time through {flushDirect}. A pot's MAIN
+ *         must be GLUEABLE — never the network token and never {NATIVEWRAP} ({initPot} rejects
+ *         both) — because a BURN is the Glue Protocol's own: a pure `unglue` through the
+ *         {GLUE_STICK} singleton (an empty collateral list redeems nothing — the supply is
+ *         destroyed and the glue's backing concentrates for every remaining holder), verified by
+ *         the hook's own balance drop and NEVER able to revert the carrying swap. A main whose
+ *         unglue refuses is flagged {unburnable} and every burn of it settles to the held ledger:
+ *         the amount is HELD on the hook FOREVER, no withdrawal path exists, so custody IS the
+ *         burn.
  *
  *         LP PROGRAM & AUTO-COMPOUNDING. The pot admin may create the pool's single hook-held liquidity
  *         position ({addLiquidity} plain, {addLiquidityAdvanced} with full rules at creation). Its fees
@@ -158,6 +158,18 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     /// @dev Largest fill either leg may carry, since a `BeforeSwapDelta` leg is a signed 128-bit value.
     uint256 private constant MAX_LEG = uint256(uint128(type(int128).max));
 
+    /// @notice The Glue Protocol's GlueStick singleton — the SAME address on every chain. Pool
+    ///         creation ensures the main's glue through it ({IGlueStickMin.ensureWrapper}, best
+    ///         effort), and EVERY burn leg is a pure {IGlueStickMin.unglue} through it: the hook
+    ///         never destroys supply itself, the Glue Protocol does.
+    address public constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+
+    /// @notice This chain's canonical wrapped-native token — the WETH9-style wrapper Uniswap's own
+    ///         periphery uses (WETH, WBNB, WPOL, WAVAX…). `address(0)` on a chain with no spendable
+    ///         native coin. A pot's MAIN may never be this address (nor the network token itself):
+    ///         the burn path is Glue's unglue, and the network wrapper is not glueable by design.
+    address public immutable NATIVEWRAP;
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // STORAGE
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -177,14 +189,17 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     // SETUP
     // ═══════════════════════════════════════════════════════════════════════════════
 
-    /// @notice Deploy the hook against a fixed PoolManager.
+    /// @notice Deploy the hook against a fixed PoolManager and this chain's wrapped native.
     /// @dev Must be deployed at an address whose low 14 bits equal {REQUIRED_HOOK_FLAGS}; the
     ///      constructor asserts it, so a mis-mined deployment fails at deploy time rather than at the
     ///      first `initialize`.
     /// @param _poolManager The Uniswap V4 PoolManager on this chain.
-    constructor(address _poolManager) GluedV4Callback(_poolManager) {
+    /// @param _nativeWrap This chain's canonical wrapped native (see {NATIVEWRAP}); `address(0)` on
+    ///                    a chain with no spendable native coin.
+    constructor(address _poolManager, address _nativeWrap) GluedV4Callback(_poolManager) {
         // The address itself carries the hook's permissions — a wrong one is unusable
         if (uint160(address(this)) & GluedV4Core.ALL_HOOK_MASK != REQUIRED_HOOK_FLAGS) revert BadRoles();
+        NATIVEWRAP = _nativeWrap;
     }
 
     /// @dev Transient-storage reentrancy guard, slot derived per deployment.
@@ -223,7 +238,13 @@ contract GlueHook is GluedV4Callback, IGlueHook {
      *      names this hook owns that pot's configuration. The roles themselves come later through
      *      {initPot}, because `beforeInitialize` carries no hook data to put them in. A pool launched
      *      through {launchPool} never reaches this callback at all — the PoolManager skips hook calls
-     *      when the hook itself is the caller — so {launchPool} records its own caller as the admin.
+     *      when the hook itself is the caller — so {launchPool} records its own caller as the admin
+     *      (and runs the same dynamic-fee rejection itself).
+     *
+     *      DYNAMIC-FEE POOLS ARE REFUSED OUTRIGHT: this hook serves static-fee pools only. The fee
+     *      is part of the pool's identity here — a million distinguishable static values per pair
+     *      that creators may use as a namespace — and every price this hook quotes reads the one
+     *      immutable fee the key declares.
      * @param sender The address that called `PoolManager.initialize`.
      * @param key The pool being initialised.
      * @return The callback's own selector, as the PoolManager requires.
@@ -233,6 +254,8 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     {
         // Only the PoolManager may drive a hook callback
         if (msg.sender != POOL_MANAGER) revert NotAllowed();
+        // Static-fee pools only: the dynamic-fee sentinel is refused at the door
+        if (key.fee == GluedV4Core.DYNAMIC_FEE_FLAG) revert BadConfig();
 
         bytes32 id = _idOf(key);
         // A pool can only be initialised once, so this can only be written once
@@ -478,17 +501,19 @@ contract GlueHook is GluedV4Callback, IGlueHook {
      * @notice Declare a hooked pool's roles. One-shot, and only the pool's initialiser may call it.
      * @dev Until this runs the hook does nothing on the pool: no shield, no pump, and {donate}
      *      reverts. `main` must be one of the key's two currencies; the other becomes `secondary`
-     *      automatically. When `main` is the NETWORK TOKEN the recipient must be a live address —
-     *      the network token cannot be burned, so burn intent (`address(0)`) is rejected. The body
-     *      lives in {GlueLiquidity.initPot} (delegatecall: same storage, same `msg.sender`, so the
-     *      admin gate is unchanged).
+     *      automatically. `main` must be GLUEABLE — never the network token and never {NATIVEWRAP}
+     *      (the burn path is Glue's unglue, and neither can run it); the declaration also ensures
+     *      the main's glue exists ({GLUE_STICK}.`ensureWrapper`, best effort — a failure never
+     *      blocks the pool, later burns just settle to the held ledger). The body lives in
+     *      {GlueLiquidity.initPot} (delegatecall: same storage, same `msg.sender`, so the admin
+     *      gate is unchanged).
      * @param key The pool key (must already be initialised through this hook).
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn (ERC20 main only).
+     * @param recipient Where bought / absorbed main goes; `address(0)` means burn.
      */
     function initPot(IPoolManagerMin.PoolKey calldata key, address main, address recipient) external {
         bytes32 id = _idOf(key);
-        GlueLiquidity.initPot(_pots[id], key, id, main, recipient);
+        GlueLiquidity.initPot(_pots[id], key, id, main, recipient, NATIVEWRAP);
     }
 
     /**
@@ -501,7 +526,8 @@ contract GlueHook is GluedV4Callback, IGlueHook {
      *      shot per pool, could ever have written it), and this entry records its own caller
      *      instead. The {initPot} and {addLiquidityAdvanced} bodies then run with the same
      *      validation, events and funding rules as the standalone entries: `main` must be one of
-     *      the key's two currencies, a native-main pot must name a live recipient, the config's
+     *      the key's two currencies and glueable (never the network token, never {NATIVEWRAP} —
+     *      its glue is ensured best-effort at declaration), the config's
      *      per-side shares must fit, and the seed settles from the caller — an ERC20 side from
      *      their allowance to this hook, a native side (always `currency0`) from `msg.value` with
      *      the unused excess refunded. Reverts if the pool already exists, and a failure anywhere
@@ -532,6 +558,9 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     ) external payable guarded returns (uint256 amount0, uint256 amount1) {
         // The key must name this hook, or the initialise below would create a pool the hook never sees
         if (key.hooks != address(this)) revert BadRoles();
+        // Static-fee pools only — the same door {beforeInitialize} closes (that callback is
+        // skipped when the hook itself initialises, so the launch re-checks it here)
+        if (key.fee == GluedV4Core.DYNAMIC_FEE_FLAG) revert BadConfig();
 
         // A successful initialise proves the pool is FRESH — and since the PoolManager skips hook
         // callbacks when the hook itself is the caller, `beforeInitialize` never ran and the pot's
@@ -544,19 +573,18 @@ contract GlueHook is GluedV4Callback, IGlueHook {
 
         // Declare the roles with the library's full one-shot validation — inside the delegatecall
         // `msg.sender` is the launcher, the admin just recorded
-        GlueLiquidity.initPot(_pots[id], key, id, main, recipient);
+        GlueLiquidity.initPot(_pots[id], key, id, main, recipient, NATIVEWRAP);
 
         // Create the program and seed its liquidity, exactly as {addLiquidityAdvanced} would
-        return GlueLiquidity.createProgram(
+        (amount0, amount1) = GlueLiquidity.createProgram(
             _pots[id], _programs[id], POOL_MANAGER, id, key, tickLower, tickUpper, liquidity, owner, config
         );
     }
 
     /**
      * @notice Move where a pot delivers the main it buys.
-     * @dev Admin-only. `address(0)` means burn (runs the burn cascade); any other value is a
-     *      literal delivery target. A native-main pot can never be pointed at burn. The body lives
-     *      in {GlueLiquidity.setRecipient}.
+     * @dev Admin-only. `address(0)` means burn (a pure Glue unglue); any other value is a
+     *      literal delivery target. The body lives in {GlueLiquidity.setRecipient}.
      * @param poolId The pool identifier.
      * @param recipient The new recipient (`address(0)` = burn).
      */
@@ -758,9 +786,9 @@ contract GlueHook is GluedV4Callback, IGlueHook {
      * @notice Replace the program's split rules. Operator only (impossible once the operator role
      *         was set to `address(0)`).
      * @dev Validated like the advanced entry ({GlueLiquidity.applyConfig}): each side's shares sum
-     *      to at most 100%, no burn share on a native main, a live recipient behind every leg that
-     *      can carry value. An edit only shapes FUTURE harvests — nothing already split or carried
-     *      is re-touched, and the standing compound carry keeps retrying under the new rules.
+     *      to at most 100% and a live recipient stands behind every leg that can carry value. An
+     *      edit only shapes FUTURE harvests — nothing already split or carried is re-touched, and
+     *      the standing compound carry keeps retrying under the new rules.
      * @param poolId The pool identifier.
      * @param config The new split rules.
      */
@@ -770,7 +798,7 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         // The OPERATOR edits the rules; a zeroed operator role means frozen forever, since
         // `msg.sender` is never zero
         if (msg.sender != g.operator) revert NotAllowed();
-        GlueLiquidity.applyConfig(g, _pots[poolId].main, config);
+        GlueLiquidity.applyConfig(g, config);
         emit ProgramConfigured(poolId, config);
     }
 
@@ -892,10 +920,10 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         return _ledgers.parked[asset];
     }
 
-    /// @notice Burn-intent main that is neither burnable nor dead-sendable, held here FOREVER.
+    /// @notice Burn-intent main whose Glue unglue refused, held here FOREVER.
     /// @dev The hook's terminal sink: there is no withdrawal path, so custody IS the burn — the
     ///      amount is out of circulation as surely as a `0xdead` balance. Once an asset lands here
-    ///      it is flagged unburnable and its burn probes are never run again.
+    ///      it is flagged unburnable and the unglue is never attempted again.
     /// @param asset The main currency.
     /// @return amount Held amount.
     function heldOf(address asset) external view returns (uint256 amount) {
@@ -1169,8 +1197,11 @@ contract GlueHook is GluedV4Callback, IGlueHook {
             uint256 depth = GluedV4Core.tangentReserve(
                 slot0.sqrtPriceX96, GluedV4Core.getPoolLiquidity(POOL_MANAGER, id), zeroForOne
             );
+            // `slot0.lpFee`, never `key.fee`: Slot0 is the fee the pool actually charges. On the
+            // static-fee pools this hook serves the two always agree — the live slot is simply the
+            // authoritative source (and it composes with the protocol fee in {GluedV4Core.swapFee}).
             uint256 feeCap = GluedMath.md512(
-                depth, GluedV4Core.swapFee(slot0.protocolFee, key.fee, zeroForOne), FEE_DENOMINATOR
+                depth, GluedV4Core.swapFee(slot0.protocolFee, slot0.lpFee, zeroForOne), FEE_DENOMINATOR
             );
             // A pool with no depth, or a zero-fee pool, can never host a pump that cannot be sandwiched
             if (feeCap == 0) return (0, 0);

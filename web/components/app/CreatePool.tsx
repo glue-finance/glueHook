@@ -198,8 +198,8 @@ export function CreatePool({
 
   /* ------------------------------ pair + fee ------------------------------ */
   const [tokenA, setTokenA] = useState("");
-  // native pre-picked (swap it for any token) — except on a no-native chain
-  // like Tempo, where the "native" coin doesn't exist: start both empty
+  // native pre-picked (swap it for any token) — except on a no-native chain,
+  // where the "native" coin doesn't exist: start both empty
   const [tokenB, setTokenB] = useState<string>(net.noNative ? "" : zeroAddress);
   const [feeIdx, setFeeIdx] = useState(2); // 0.30%
 
@@ -580,6 +580,27 @@ export function CreatePool({
                       </button>
                     );
                   })}
+                  {/* Dynamic fee (the 0x800000 sentinel) is unsupported by design: GlueHook
+                      serves static-fee pools only and rejects the sentinel at creation. */}
+                  <button
+                    disabled
+                    className="cursor-not-allowed rounded-xl border-2 border-dashed p-3.5 text-left opacity-70"
+                    style={{ borderColor: "var(--line)" }}
+                    title="GlueHook serves static-fee pools only — the fee is immutable and part of the pool's identity, so dynamic-fee keys are rejected at creation."
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[16px] font-extrabold text-dim">Dynamic</div>
+                      <span
+                        className="mono rounded-full border px-2 py-0.5 text-[9px] font-extrabold"
+                        style={{ borderColor: `${YELLOW}80`, background: `${YELLOW}1a`, color: YELLOW }}
+                      >
+                        Not supported
+                      </span>
+                    </div>
+                    <div className="mono mt-1 text-[10px] leading-snug text-dim2">
+                      hook-set fee — not supported: GlueHook pools keep one immutable fee
+                    </div>
+                  </button>
                 </div>
               </div>
 

@@ -1,4 +1,4 @@
-import { decodeEventLog, parseAbiItem, toEventSelector, type AbiEvent, type Hex, type Log } from "viem";
+import { decodeEventLog, parseAbiItem, toEventSelector, type AbiEvent, type Address, type Hex, type Log } from "viem";
 import type { Net } from "./chains";
 import { clientForNet, scanClientsFor } from "./client";
 import { scanLogs } from "./logs";
@@ -96,6 +96,7 @@ function saveFeed(chainId: number, poolId: string, c: FeedCache) {
  */
 export async function fetchPoolEvents(
   net: Net,
+  hook: Address, // the pool's OWN hook deployment (V1 pools emit on V1)
   poolId: Hex,
   fromBlockDefault: number,
   onProgress?: (scanned: bigint, total: bigint) => void,
@@ -107,7 +108,7 @@ export async function fetchPoolEvents(
 
   if (from <= latest) {
     const { logs, scannedTo } = await scanLogs(scanClientsFor(net), {
-      address: net.hook,
+      address: hook,
       topics: [TOPIC0S, poolId],
       fromBlock: from,
       toBlock: latest,

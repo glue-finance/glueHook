@@ -44,6 +44,10 @@ import {GlueHookHandler} from "./handlers/GlueHookHandler.sol";
 contract GlueHookProgramInvariant is StdInvariant, Test {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address constant HOOK_ADDR = 0x91110000000000000000000000000000000020c8;
+    /// @dev The REAL canonical GlueStick address (the hook's compile-time constant).
+    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    /// @dev The chain's canonical wrapped native, as the hook's constructor arg.
+    address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
     address constant ETH = address(0);
     uint24 constant FEE = 3000;
@@ -70,7 +74,8 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
             0xb0B0000000000000000000000000000000000B0B,
             vm.getDeployedCode("GlueLiquidity.sol:GlueLiquidity")
         );
-        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER), HOOK_ADDR);
+        deployCodeTo("MockGlueStick.sol:MockGlueStick", "", GLUE_STICK);
+        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER, NATIVEWRAP), HOOK_ADDR);
         pump = GlueHook(payable(HOOK_ADDR));
 
         token = new MockERC20("PumpMain", "PMN", 18);

@@ -739,7 +739,7 @@ export function BuybackManagement() {
         the same <C>try/catch</C> isolation as before. The adversarial matrix for the new legs — a
         refusing recipient, an unburnable main under a burn share, a hostile native recipient, a
         re-entering recipient — is the <C>NS</C> series of the <C>GlueHookPotSplit</C> suite, and
-        the split is exercised against live PoolManagers on Ethereum and Tempo in the fork suite.
+        the split is exercised against the live PoolManager on Ethereum mainnet in the fork suite.
       </P>
       <Stats
         items={[

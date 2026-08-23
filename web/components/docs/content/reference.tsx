@@ -248,7 +248,7 @@ export function Security() {
 
       <Stats
         items={[
-          { v: "123", l: "forge tests, 0 fail", c: "var(--t-green)" },
+          { v: "127", l: "forge tests, 0 fail", c: "var(--t-green)" },
           { v: "12", l: "stateful invariants", c: "var(--t-blue)" },
           { v: "12", l: "fuzzed theorems", c: "var(--t-magenta)" },
           { v: "5", l: "live-fork proofs", c: "var(--t-teal)" },
@@ -397,7 +397,7 @@ export function Security() {
       <Code>
         git clone https://github.com/glue-finance/GlueHook && cd GlueHook{"\n"}
         forge install OpenZeppelin/openzeppelin-contracts{"\n"}
-        forge clean && forge test{"          "}<span className="c">{"// 123 tests, 0 failures"}</span>{"\n"}
+        forge clean && forge test{"          "}<span className="c">{"// 127 tests, 0 failures"}</span>{"\n"}
         FORK_RPC_URL=… forge test{"          "}<span className="c">{"// 128: +5 against the LIVE PoolManager"}</span>
       </Code>
 

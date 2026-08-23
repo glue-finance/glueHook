@@ -38,7 +38,7 @@ export const DOC_TREE: DocGroup[] = [
         slug: "networks",
         title: "Networks & addresses",
         short: "Networks",
-        blurb: "One canonical address on all 23 networks — and why the address itself is the permission.",
+        blurb: "One canonical address on all 18 networks — and why the address itself is the permission.",
       },
     ],
   },
@@ -231,7 +231,7 @@ export const DOC_TREE: DocGroup[] = [
         slug: "security",
         title: "Security & audit",
         short: "Security",
-        blurb: "The threat model, the invariant catalogue, 123 tests, and what you actually trust.",
+        blurb: "The threat model, the invariant catalogue, 127 tests, and what you actually trust.",
       },
       {
         slug: "glossary",

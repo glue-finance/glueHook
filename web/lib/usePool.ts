@@ -19,8 +19,10 @@ export function usePoolList(net: Net) {
   const q = useQuery({
     queryKey: ["pools", net.chain.id],
     queryFn: async () => {
-      const pools = await scanPools(net, (scanned, total) =>
-        setProgress(Math.min(100, Number((scanned * 100n) / total))),
+      const pools = await scanPools(
+        net,
+        (scanned, total) => setProgress(Math.min(100, Number((scanned * 100n) / total))),
+        (partial) => qc.setQueryData<RegisteredPool[]>(["pools", net.chain.id], partial),
       );
       setProgress(null);
       return pools;

@@ -176,19 +176,20 @@ export function PoolPicker({
       </div>
       <div className="space-y-1 p-2">
         {isLoading && (
-          <div className="px-3 py-6">
+          <div className={sorted.length > 0 ? "px-3 pb-2 pt-1" : "px-3 py-6"}>
             <ScanBar
               progress={progress}
               label="scanning PotOpened logs…"
-              note={`reading ${net.label} history — cached after the first pass`}
+              note={sorted.length > 0 ? undefined : `reading ${net.label} history — cached after the first pass`}
+              thin={sorted.length > 0}
             />
           </div>
         )}
-        {!isLoading && (pools?.length ?? 0) === 0 && (
+        {!isLoading && sorted.length === 0 && (
           <div className="mono px-3 py-6 text-center text-[12px] leading-relaxed text-dim2">
             no hooked pools on {net.label} yet.
             <br />
-            be the first — or import one by poolId below.
+            switch network if you launched elsewhere — or import a poolId below.
           </div>
         )}
         {sorted.map((p) => (

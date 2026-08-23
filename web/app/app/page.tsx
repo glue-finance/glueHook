@@ -25,7 +25,7 @@ import { useIsMobile } from "@/lib/useIsMobile";
 type MobileTab = "info" | "trade" | "charts" | "manage";
 type Tab = "live" | "simulate";
 
-const DEFAULT_NET = NETS.find((n) => n.slug === "robinhood") ?? NETS[0];
+const DEFAULT_NET = NETS.find((n) => n.slug === "ethereum") ?? NETS[0];
 const POOL_ID = /^0x[0-9a-fA-F]{64}$/;
 
 /**

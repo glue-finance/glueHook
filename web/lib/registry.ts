@@ -24,12 +24,11 @@ export type RegisteredPool = {
   hook: Address;
 };
 
-// v7: the app now serves BOTH hook deployments — the new canonical V2 and the
-// original V1 (real pools, real volume). Entries gained a `hook` field (which
-// deployment emitted the pot) that v6 caches lack, and the scan window now
-// starts from the V1 deploy block; the version bump forces a clean rescan.
+// v8: tip-first scan so brand-new pots show before the historical crawl
+// finishes. v7 caches could stamp a frontier that skipped a window of V2
+// PotOpened logs on a quiet public RPC; the bump forces a rescan.
 type Cache = {
-  v: 7;
+  v: 8;
   lastBlock: string;
   pools: Record<string, { key: PoolKey | null; admin: Address; block: number; hook: Address }>;
 };
@@ -37,7 +36,6 @@ type Cache = {
 const potOpenedEvent = parseAbiItem(
   "event PotOpened(bytes32 indexed poolId, address indexed admin)",
 );
-// Uniswap V4 PoolManager pool-creation event — the authoritative poolId -> PoolKey map
 const pmInitializeEvent = parseAbiItem(
   "event Initialize(bytes32 indexed id, address indexed currency0, address indexed currency1, uint24 fee, int24 tickSpacing, address hooks, uint160 sqrtPriceX96, int24 tick)",
 );
@@ -47,11 +45,8 @@ const INIT_POT_SELECTOR = toFunctionSelector(
 );
 
 /**
- * Uniswap v4 dynamic-fee sentinel (LPFeeLibrary.DYNAMIC_FEE_FLAG). GlueHook serves static-fee
- * pools only — V2 refuses the sentinel outright at creation, and the earlier deployment's swap
- * math reverts on a funded dynamic-fee pot — so such pools must never surface in the UI beside
- * working ones. They stay in the cache (harmless, avoids rescans) but are filtered out of every
- * result.
+ * Uniswap v4 dynamic-fee sentinel (LPFeeLibrary.DYNAMIC_FEE_FLAG). GlueHook
+ * serves static-fee pools only, so these never surface in the picker.
  */
 const DYNAMIC_FEE_FLAG = 0x800000;
 const isDynamicFeeKey = (key: PoolKey | null): boolean =>
@@ -65,13 +60,13 @@ function loadCache(chainId: number): Cache {
       const raw = localStorage.getItem(cacheKey(chainId));
       if (raw) {
         const c = JSON.parse(raw) as Cache;
-        if (c.v === 7) return c;
+        if (c.v === 8) return c;
       }
     } catch {
       /* corrupted cache → rescan */
     }
   }
-  return { v: 7, lastBlock: "0", pools: {} };
+  return { v: 8, lastBlock: "0", pools: {} };
 }
 
 function saveCache(chainId: number, c: Cache) {
@@ -98,14 +93,7 @@ const POOL_KEY_TUPLE = {
 /**
  * Recover the PoolKey from the calldata of the transaction that opened the
  * pot. Two shapes are tried, and BOTH are verified by hashing the candidate
- * back to the poolId, so a wrong guess can never poison the registry:
- *
- * 1. FIRST ARGUMENT. Every hook entrypoint that opens a pot (`launchPool`,
- *    `initPot`, `addLiquidity…`) takes the PoolKey first, and a PoolKey is a
- *    STATIC tuple — its five words sit inline right after the selector,
- *    whatever the function. This is the path that actually fires for pools
- *    created through the app, which call `launchPool`, not `initPot`.
- * 2. An `initPot` call embedded ANYWHERE in the data (multicall wrappers).
+ * back to the poolId, so a wrong guess can never poison the registry.
  */
 function keyFromCalldata(data: Hex, poolId: Hex): PoolKey | null {
   const id = poolId.toLowerCase();
@@ -122,7 +110,7 @@ function keyFromCalldata(data: Hex, poolId: Hex): PoolKey | null {
       const k = key as PoolKey;
       if (poolIdOf(k).toLowerCase() === id) return k;
     } catch {
-      /* not this shape — try the next candidate */
+      /* not this shape */
     }
   }
   return null;
@@ -131,7 +119,6 @@ function keyFromCalldata(data: Hex, poolId: Hex): PoolKey | null {
 const POT_OPENED_TOPIC0 = toEventSelector(potOpenedEvent);
 const INITIALIZE_TOPIC0 = toEventSelector(pmInitializeEvent);
 
-/** Decode an Initialize log into a PoolKey, verified against its own poolId. */
 function keyFromInitializeLog(log: Log): { id: Hex; key: PoolKey } | null {
   try {
     const { args } = decodeEventLog({
@@ -154,25 +141,12 @@ function keyFromInitializeLog(log: Log): { id: Hex; key: PoolKey } | null {
       tickSpacing: Number(a.tickSpacing),
       hooks: a.hooks,
     };
-    // the key must hash back to the id it was filed under — a mismatched or
-    // spoofed log can never poison the registry
     return poolIdOf(key).toLowerCase() === a.id.toLowerCase() ? { id: a.id, key } : null;
   } catch {
     return null;
   }
 }
 
-/**
- * Fallback key recovery: ask the PoolManager for the `Initialize` events of
- * the given poolIds.
- *
- * ONE lookup resolves the whole batch — the ids ride in a topic OR-list
- * (`[topic0, [id...]]`) so the NODE does the filtering and returns at most one
- * log per pool. The walk runs BACKWARDS from the newest block a pot was opened
- * at, because a pool is always initialized at or before its own pot opens and
- * in practice in the same transaction. That turns what used to be a full
- * PoolManager history replay PER POOL into a couple of requests for all of them.
- */
 async function keysFromPoolManager(
   net: Net,
   ids: Hex[],
@@ -194,86 +168,109 @@ async function keysFromPoolManager(
       if (hit) found.set(hit.id.toLowerCase(), hit.key);
     }
   } catch (e) {
-    // unresolved is retried on the next scan — but say WHY it failed now,
-    // because a silent null here reads as "pool broken" in the UI
     console.warn(`[registry] PoolKey recovery failed for ${ids.length} pool(s):`, e);
   }
   return found;
 }
 
+function listFromCache(cache: Cache): RegisteredPool[] {
+  return Object.entries(cache.pools)
+    .filter(([, p]) => !isDynamicFeeKey(p.key))
+    .map(([poolId, p]) => ({
+      poolId: poolId as Hex,
+      ...p,
+    }));
+}
+
+async function ingestOpenedLogs(net: Net, cache: Cache, logs: Log[]): Promise<boolean> {
+  const client = clientForNet(net);
+  let dirty = false;
+  for (const log of logs) {
+    let poolId: Hex;
+    let admin: Address;
+    try {
+      const { args } = decodeEventLog({
+        abi: [potOpenedEvent],
+        topics: log.topics as [Hex, ...Hex[]],
+        data: log.data,
+      });
+      ({ poolId, admin } = args as unknown as { poolId: Hex; admin: Address });
+    } catch {
+      continue;
+    }
+    if (!poolId || !log.transactionHash) continue;
+    const block = Number(log.blockNumber ?? 0n);
+    let key: PoolKey | null = null;
+    try {
+      const tx = await client.getTransaction({ hash: log.transactionHash });
+      key = keyFromCalldata(tx.input, poolId);
+    } catch {
+      /* tx fetch failed → PoolManager fallback */
+    }
+    cache.pools[poolId.toLowerCase()] = { key, admin, block, hook: log.address as Address };
+    dirty = true;
+  }
+  return dirty;
+}
+
 /**
- * Scan PotOpened logs across BOTH hook deployments (the legacy V1 and the
- * canonical V2, one pass — eth_getLogs takes an address list) from the
- * earliest deploy block (or the cached frontier), and recover each pool's
- * PoolKey. Results persist in localStorage so revisits are instant.
+ * Scan PotOpened logs across BOTH hook deployments from the earliest deploy
+ * block (or the cached frontier), and recover each pool's PoolKey.
+ *
+ * When the backlog is wider than one RPC window the recent tip is scanned
+ * FIRST so a pool launched a few minutes ago shows up before the historical
+ * crawl finishes. The frontier still only advances contiguously.
  */
 export async function scanPools(
   net: Net,
   onProgress?: (scanned: bigint, total: bigint) => void,
+  onPartial?: (pools: RegisteredPool[]) => void,
 ): Promise<RegisteredPool[]> {
-  const client = clientForNet(net);
   const cache = loadCache(net.chain.id);
   const earliest = net.legacy?.deployBlock ?? net.deployBlock;
-  const from = BigInt(cache.lastBlock) > BigInt(earliest)
-    ? BigInt(cache.lastBlock) + 1n
-    : BigInt(earliest);
-  const latest = await client.getBlockNumber();
+  const from =
+    BigInt(cache.lastBlock) > BigInt(earliest) ? BigInt(cache.lastBlock) + 1n : BigInt(earliest);
+  const latest = await clientForNet(net).getBlockNumber();
+  const hooks = net.legacy ? [net.legacy.hook, net.hook] : net.hook;
+  const cap = BigInt(net.logRange);
 
   let dirty = false;
+  const publish = () => {
+    if (dirty) saveCache(net.chain.id, cache);
+    onPartial?.(listFromCache(cache));
+  };
 
   if (from <= latest) {
+    const gap = latest - from + 1n;
+    if (gap > cap) {
+      const tipFrom = latest - cap + 1n;
+      const tip = await scanLogs(scanClientsFor(net), {
+        address: hooks,
+        topics: [POT_OPENED_TOPIC0],
+        fromBlock: tipFrom,
+        toBlock: latest,
+        maxRange: cap,
+      });
+      dirty = (await ingestOpenedLogs(net, cache, tip.logs)) || dirty;
+      publish();
+    }
+
     const { logs, scannedTo } = await scanLogs(scanClientsFor(net), {
-      address: net.legacy ? [net.legacy.hook, net.hook] : net.hook,
+      address: hooks,
       topics: [POT_OPENED_TOPIC0],
       fromBlock: from,
       toBlock: latest,
-      maxRange: BigInt(net.logRange),
+      maxRange: cap,
       onProgress,
     });
-
-    // resolve what calldata can (one getTransaction each) — misses land in
-    // the cache as key:null and are picked up by the batched retry below
-    for (const log of logs) {
-      let poolId: Hex;
-      let admin: Address;
-      try {
-        const { args } = decodeEventLog({
-          abi: [potOpenedEvent],
-          topics: log.topics as [Hex, ...Hex[]],
-          data: log.data,
-        });
-        ({ poolId, admin } = args as unknown as { poolId: Hex; admin: Address });
-      } catch {
-        continue;
-      }
-      if (!poolId || !log.transactionHash) continue;
-      const block = Number(log.blockNumber ?? 0n);
-
-      let key: PoolKey | null = null;
-      try {
-        const tx = await client.getTransaction({ hash: log.transactionHash });
-        key = keyFromCalldata(tx.input, poolId);
-      } catch {
-        /* tx fetch failed → PoolManager fallback */
-      }
-      // the emitting contract IS the pool's hook deployment — recorded even
-      // when key recovery fails, so pot reads always know where to look
-      cache.pools[poolId.toLowerCase()] = { key, admin, block, hook: log.address as Address };
-      dirty = true;
-    }
-    // persist how far the scan actually GOT — an interrupted scan resumes
-    // from the failure point instead of stamping the gap as "done"
+    dirty = (await ingestOpenedLogs(net, cache, logs)) || dirty;
     if (scannedTo >= from) {
       cache.lastBlock = scannedTo.toString();
       dirty = true;
     }
+    publish();
   }
 
-  // EVERY pool still missing its key gets retried, every scan — not just the
-  // ones found above. Recovery can fail transiently (a rate-limited first
-  // visit), and a null that nothing revisits would otherwise be permanent:
-  // the scan frontier has moved on, so no future pass would ever look again.
-  // One batched, id-filtered backwards lookup covers the whole set.
   const unresolved: Hex[] = [];
   let newestMiss = BigInt(net.legacy?.deployBlock ?? net.deployBlock);
   for (const [id, p] of Object.entries(cache.pools)) {
@@ -283,8 +280,6 @@ export async function scanPools(
     if (b > newestMiss) newestMiss = b;
   }
   if (unresolved.length > 0) {
-    // every Initialize sits at or before its own pot block, so the newest pot
-    // block is a complete upper bound for the backwards walk
     const recovered = await keysFromPoolManager(net, unresolved, newestMiss);
     for (const [id, key] of recovered) {
       const entry = cache.pools[id];
@@ -296,34 +291,18 @@ export async function scanPools(
   }
 
   if (dirty) saveCache(net.chain.id, cache);
-
-  return Object.entries(cache.pools)
-    .filter(([, p]) => !isDynamicFeeKey(p.key))
-    .map(([poolId, p]) => ({
-      poolId: poolId as Hex,
-      ...p,
-    }));
+  return listFromCache(cache);
 }
 
-/**
- * Register a pool the user just created in this browser — written straight
- * into the localStorage cache so it shows up instantly (the log scan would
- * find it anyway on the next visit).
- */
 export function registerPool(net: Net, key: PoolKey, admin: Address, block: number): RegisteredPool {
   const poolId = poolIdOf(key).toLowerCase() as Hex;
   const cache = loadCache(net.chain.id);
-  // the key carries its own hook — new creations are always the canonical one
   const entry = { key, admin, block, hook: key.hooks as Address };
   cache.pools[poolId] = entry;
   saveCache(net.chain.id, cache);
   return { poolId, ...entry };
 }
 
-/**
- * Import a single pool by poolId: registry first, then a targeted
- * PoolManager Initialize lookup.
- */
 export async function importPool(net: Net, poolId: Hex): Promise<RegisteredPool | null> {
   const id = poolId.toLowerCase() as Hex;
   const cache = loadCache(net.chain.id);
@@ -338,7 +317,6 @@ export async function importPool(net: Net, poolId: Hex): Promise<RegisteredPool 
     key,
     admin: (hit?.admin ?? "0x0000000000000000000000000000000000000000") as Address,
     block: hit?.block ?? net.deployBlock,
-    // the recovered key names its own hook deployment (V1 or canonical)
     hook: key.hooks as Address,
   };
   cache.pools[id] = entry;

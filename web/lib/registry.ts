@@ -182,9 +182,19 @@ function listFromCache(cache: Cache): RegisteredPool[] {
     }));
 }
 
-async function ingestOpenedLogs(net: Net, cache: Cache, logs: Log[]): Promise<boolean> {
+const INGEST_BATCH = 4;
+
+async function ingestOpenedLogs(
+  net: Net,
+  cache: Cache,
+  logs: Log[],
+  onUpdate?: () => void,
+): Promise<boolean> {
   const client = clientForNet(net);
   let dirty = false;
+  type Pending = { poolId: Hex; admin: Address; block: number; hook: Address; hash: Hex };
+  const pending: Pending[] = [];
+
   for (const log of logs) {
     let poolId: Hex;
     let admin: Address;
@@ -199,16 +209,35 @@ async function ingestOpenedLogs(net: Net, cache: Cache, logs: Log[]): Promise<bo
       continue;
     }
     if (!poolId || !log.transactionHash) continue;
-    const block = Number(log.blockNumber ?? 0n);
-    let key: PoolKey | null = null;
-    try {
-      const tx = await client.getTransaction({ hash: log.transactionHash });
-      key = keyFromCalldata(tx.input, poolId);
-    } catch {
-      /* tx fetch failed → PoolManager fallback */
+    const id = poolId.toLowerCase() as Hex;
+    // already fully recovered (e.g. tip window overlapping the historical crawl)
+    if (cache.pools[id]?.key) continue;
+    pending.push({
+      poolId: id,
+      admin,
+      block: Number(log.blockNumber ?? 0n),
+      hook: log.address as Address,
+      hash: log.transactionHash,
+    });
+  }
+
+  for (let i = 0; i < pending.length; i += INGEST_BATCH) {
+    const batch = pending.slice(i, i + INGEST_BATCH);
+    const txs = await Promise.all(
+      batch.map((p) => client.getTransaction({ hash: p.hash }).catch(() => null)),
+    );
+    for (let j = 0; j < batch.length; j++) {
+      const p = batch[j];
+      const tx = txs[j];
+      cache.pools[p.poolId] = {
+        key: tx ? keyFromCalldata(tx.input, p.poolId) : null,
+        admin: p.admin,
+        block: p.block,
+        hook: p.hook,
+      };
+      dirty = true;
     }
-    cache.pools[poolId.toLowerCase()] = { key, admin, block, hook: log.address as Address };
-    dirty = true;
+    onUpdate?.();
   }
   return dirty;
 }
@@ -235,10 +264,17 @@ export async function scanPools(
   const cap = BigInt(net.logRange);
 
   let dirty = false;
-  const publish = () => {
-    if (dirty) saveCache(net.chain.id, cache);
-    onPartial?.(listFromCache(cache));
+  // never publish an empty list — setQueryData([]) makes React Query drop
+  // isLoading while the crawl is still running, which flashes "no pools"
+  const notify = () => {
+    const list = listFromCache(cache);
+    if (list.length > 0) onPartial?.(list);
   };
+  const persist = () => {
+    if (dirty) saveCache(net.chain.id, cache);
+  };
+
+  notify();
 
   if (from <= latest) {
     const gap = latest - from + 1n;
@@ -251,8 +287,8 @@ export async function scanPools(
         toBlock: latest,
         maxRange: cap,
       });
-      dirty = (await ingestOpenedLogs(net, cache, tip.logs)) || dirty;
-      publish();
+      dirty = (await ingestOpenedLogs(net, cache, tip.logs, notify)) || dirty;
+      persist();
     }
 
     const { logs, scannedTo } = await scanLogs(scanClientsFor(net), {
@@ -263,12 +299,13 @@ export async function scanPools(
       maxRange: cap,
       onProgress,
     });
-    dirty = (await ingestOpenedLogs(net, cache, logs)) || dirty;
+    dirty = (await ingestOpenedLogs(net, cache, logs, notify)) || dirty;
     if (scannedTo >= from) {
       cache.lastBlock = scannedTo.toString();
       dirty = true;
     }
-    publish();
+    persist();
+    notify();
   }
 
   const unresolved: Hex[] = [];
@@ -288,6 +325,7 @@ export async function scanPools(
         dirty = true;
       }
     }
+    notify();
   }
 
   if (dirty) saveCache(net.chain.id, cache);

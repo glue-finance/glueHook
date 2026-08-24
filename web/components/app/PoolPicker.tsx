@@ -135,7 +135,7 @@ export function PoolPicker({
   selected: RegisteredPool | null;
   onSelect: (p: RegisteredPool) => void;
 }) {
-  const { data: pools, isLoading, progress, importById, refetch } = usePoolList(net);
+  const { data: pools, isFetching, progress, importById, refetch } = usePoolList(net);
   const { address: me } = useAccount();
   // your pools first — "yours" == the wallet that opened the pot (real Initialize data)
   const sorted = me
@@ -175,17 +175,21 @@ export function PoolPicker({
         </button>
       </div>
       <div className="space-y-1 p-2">
-        {isLoading && (
+        {isFetching && (
           <div className={sorted.length > 0 ? "px-3 pb-2 pt-1" : "px-3 py-6"}>
             <ScanBar
               progress={progress}
-              label="scanning PotOpened logs…"
+              label={
+                sorted.length === 0 && progress !== null && progress >= 99
+                  ? "loading pools…"
+                  : "scanning PotOpened logs…"
+              }
               note={sorted.length > 0 ? undefined : `reading ${net.label} history — cached after the first pass`}
               thin={sorted.length > 0}
             />
           </div>
         )}
-        {!isLoading && sorted.length === 0 && (
+        {!isFetching && sorted.length === 0 && (
           <div className="mono px-3 py-6 text-center text-[12px] leading-relaxed text-dim2">
             no hooked pools on {net.label} yet.
             <br />

@@ -16,13 +16,23 @@ import { importPool, scanPools, type RegisteredPool } from "./registry";
 export function usePoolList(net: Net) {
   const [progress, setProgress] = useState<number | null>(null);
   const qc = useQueryClient();
+  useEffect(() => {
+    setProgress(null);
+  }, [net.chain.id]);
   const q = useQuery({
     queryKey: ["pools", net.chain.id],
     queryFn: async () => {
+      setProgress(null);
       const pools = await scanPools(
         net,
-        (scanned, total) => setProgress(Math.min(100, Number((scanned * 100n) / total))),
-        (partial) => qc.setQueryData<RegisteredPool[]>(["pools", net.chain.id], partial),
+        // leave the last percent for ingest so the bar doesn't read "done"
+        // while getTransaction is still resolving each PotOpened log
+        (scanned, total) => setProgress(Math.min(99, Number((scanned * 99n) / total))),
+        (partial) => {
+          if (partial.length > 0) {
+            qc.setQueryData<RegisteredPool[]>(["pools", net.chain.id], partial);
+          }
+        },
       );
       setProgress(null);
       return pools;

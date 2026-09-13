@@ -23,22 +23,22 @@ on each chain's explorer. Launch pools, add liquidity and manage programs from
 [simulator](https://gluehook.trade/app?tab=simulate) · [docs](https://gluehook.trade/docs)).
 
 ```
-GlueHook  0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8
+GlueHook       0xbB021554C5294328b04fa313669715bD201BA040   (V4 generation, permission bits 0x2040)
+GlueLiquidity  0xFAc051590a9F2c2AC4838c88F5754591Df194bc5   (linked library)
 ```
 
-> The address above is the **V2** deployment. This repository is **V3** — wrapper-aware burns, the
-> merged harvest + compound, and the unified, reference-gated pump described below. V3 carries
-> different hook permission bits (`0x2040`, no `beforeSwap`), so it deploys at a new address. Its
-> shipping generation is **V4**: the same source bound to the Glue Protocol's campaign-4 `GlueStick`
-> `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`, landing at
-> **`0xbB021554C5294328b04fa313669715bD201BA040`** (library `GlueLiquidity`
-> `0xFAc051590a9F2c2AC4838c88F5754591Df194bc5`) on every chain; the table will be updated when
-> it lands. (An earlier V3 build at `0x1576…a040` is bound to a Stick that was never handed over
-> — do not use it.)
+> The address above is the **V4** deployment — landed 2026-09-13 on 18 chains (13 mainnets + 5
+> testnets), same address everywhere, bound at compile time to the Glue Protocol's campaign-4
+> `GlueStick` `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`. V4 is the V3 source (wrapper-aware
+> burns, the merged harvest + compound, the unified, reference-gated pump described below) with only
+> that constant changed; it was deployed from the Glue repository's release orchestrator, which lands
+> the Stick first, then this hook, then the Glue engine pair that binds to it. The retired
+> generations — V2 at `0x0F41…20c8` (bits `0x20C8`, bound to the campaign-1 Stick) and the
+> unshipped V3 build at `0x1576…a040` — are not the hook the Glue engines point at.
 
-| Mainnets | Testnets |
+| Mainnets (13) | Testnets (5) |
 |---|---|
-| [Ethereum](https://etherscan.io/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Base](https://basescan.org/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Unichain](https://uniscan.xyz/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Arbitrum](https://arbiscan.io/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Optimism](https://optimistic.etherscan.io/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [BNB Chain](https://bscscan.com/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Polygon](https://polygonscan.com/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Avalanche](https://snowscan.xyz/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [X Layer](https://www.oklink.com/x-layer/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [World Chain](https://worldscan.org/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Soneium](https://soneium.blockscout.com/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [MegaETH](https://megaeth.blockscout.com/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Robinhood](https://robinscan.io/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) | [Sepolia](https://sepolia.etherscan.io/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Base Sepolia](https://sepolia.basescan.org/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Unichain Sepolia](https://sepolia.uniscan.xyz/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Arbitrum Sepolia](https://sepolia.arbiscan.io/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) · [Robinhood Testnet](https://explorer.testnet.chain.robinhood.com/address/0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) |
+| [Ethereum](https://etherscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Base](https://basescan.org/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Unichain](https://uniscan.xyz/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Arbitrum](https://arbiscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Optimism](https://optimistic.etherscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [BNB Chain](https://bscscan.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Polygon](https://polygonscan.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Avalanche](https://snowscan.xyz/address/0xbB021554C5294328b04fa313669715bD201BA040) · [X Layer](https://www.oklink.com/x-layer/address/0xbB021554C5294328b04fa313669715bD201BA040) · [World Chain](https://worldscan.org/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Soneium](https://soneium.blockscout.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [MegaETH](https://megaeth.blockscout.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Robinhood](https://robinscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) | [Sepolia](https://sepolia.etherscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Base Sepolia](https://sepolia.basescan.org/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Unichain Sepolia](https://sepolia.uniscan.xyz/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Arbitrum Sepolia](https://sepolia.arbiscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Robinhood Testnet](https://explorer.testnet.chain.robinhood.com/address/0xbB021554C5294328b04fa313669715bD201BA040) |
 
 ## Why this hook exists
 

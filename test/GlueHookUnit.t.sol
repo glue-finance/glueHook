@@ -13,7 +13,7 @@ import {MockFeeOnTransferERC20} from "./mocks/MockFeeOnTransferERC20.sol";
  * @title  GlueHookUnit — deterministic single-behaviour proofs, one per test.
  * @notice U1–U14. Everything the hook promises in its interface, checked in isolation against the
  *         REAL PoolManager: deployment gating, callback auth, admin capture, role declaration,
- *         funding in both currencies (including fee-on-transfer), both mechanics' happy paths,
+ *         funding in both currencies (including fee-on-transfer), the pump behind buys and sells,
  *         recipient delivery, the passthrough guarantees, and the view surface.
  */
 contract GlueHookUnit is GlueHookFixture {
@@ -41,9 +41,6 @@ contract GlueHookUnit is GlueHookFixture {
 
         vm.expectRevert(IGlueHook.NotAllowed.selector);
         pump.beforeInitialize(address(this), key, 0);
-
-        vm.expectRevert(IGlueHook.NotAllowed.selector);
-        pump.beforeSwap(address(this), key, params, "");
 
         vm.expectRevert(IGlueHook.NotAllowed.selector);
         pump.afterSwap(address(this), key, params, 0, "");
@@ -173,48 +170,53 @@ contract GlueHookUnit is GlueHookFixture {
 
         (bool delivered, address to, uint256 amount, IGlueHook.Delivery mode) = _lastDelivered(logs);
         assertTrue(delivered, "the bought main was delivered");
-        assertEq(to, GLUE_STICK, "through the Glue Protocol's unglue");
+        assertEq(to, stick.wrapperOf(address(token)), "through the main's own GlueWrapper unglue");
         assertEq(uint8(mode), uint8(IGlueHook.Delivery.BURNED), "as a BURNED delivery");
         assertEq(amount, bought, "in full");
         assertEq(token.balanceOf(DEAD), bought, "and the glue really destroyed it (dead-routed: no burn())");
         assertEq(token.balanceOf(address(pump)), 0, "nothing stuck to the hook");
     }
 
-    /// U10 — the shield's happy path: a sell a rich pot absorbs IN FULL leaves the price bit-identical
-    ///       and pays the seller exactly what the quote promised.
-    function test_U10_shieldFullAbsorb() public {
+    /// U10 — the sell-side pump's happy path: a sell into a rich pot pays the seller the pool's own
+    ///       price (their trade is untouched), then the pump buys the dip behind them — spending
+    ///       exactly what its quote for the seller's proceeds sized, clearing its floor, and lifting
+    ///       the price back up but never above where the sell started.
+    function test_U10_pumpBehindSell() public {
         _donateEth(key, 50 ether);
         uint160 before = _sqrtPrice(id);
-        (uint256 quotedAbsorb, uint256 quotedPay) = pump.quoteShield(key, -int256(2_000e18));
 
         uint256 helperEthBefore = address(helper).balance;
         vm.recordLogs();
         helper.swap(key, false, -int256(2_000e18)); // token -> ETH = a sell of main
-        (bool shielded, uint256 absorbed, uint256 paid) = _lastShielded(vm.getRecordedLogs());
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        (bool pumped, uint256 spent, uint256 bought) = _lastPumped(logs);
+        uint256 received = address(helper).balance - helperEthBefore;
 
-        assertTrue(shielded, "the pot absorbed the sell");
-        assertEq(absorbed, 2_000e18, "in full");
-        assertEq(absorbed, quotedAbsorb, "matching the quote's input");
-        assertEq(paid, quotedPay, "and the quote's payout");
-        assertEq(address(helper).balance - helperEthBefore, paid, "the seller received exactly it");
-        assertEq(_sqrtPrice(id), before, "and the pool's price never moved");
+        assertTrue(pumped, "the pump fired behind the sell");
+        // The pot is rich, the dip sits below the reference: the fee ceiling binds (0.8 · 0.3% · ~100 ETH)
+        assertApproxEqRel(spent, 0.24 ether, 0.02e18, "the fee ceiling sized it");
+        assertLt(spent, (received * 48) / 100, "well inside 48% of what the seller received");
+        assertGt(bought, 0, "and it bought main");
+        assertEq(pump.potOf(id).balance, 50 ether - spent, "the pot was debited exactly the spend");
+        // Main is currency1: the sell lifted the sqrt ratio (a cheaper main), the pump pulled it back
+        // part of the way, and it still sits above the sell's start
+        assertGt(_sqrtPrice(id), before, "main's price ends below the sell's start");
     }
 
-    /// U11 — a pot thinner than the sell absorbs what it can afford at the pool's own price, spends
-    ///       itself to the wei, and hands the remainder to the pool.
-    function test_U11_shieldPartialAbsorb() public {
+    /// U11 — a pot thinner than the pump it could carry spends 80% of itself (the haircut), never
+    ///       all of it, and the seller's own trade is still the pool's plain execution.
+    function test_U11_thinPotBehindSell() public {
         _donateEth(key, 0.05 ether);
         uint160 before = _sqrtPrice(id);
 
         vm.recordLogs();
         helper.swap(key, false, -int256(60_000e18));
-        (bool shielded, uint256 absorbed, uint256 paid) = _lastShielded(vm.getRecordedLogs());
+        (bool pumped, uint256 spent, ) = _lastPumped(vm.getRecordedLogs());
 
-        assertTrue(shielded, "the thin pot still filled");
-        assertLt(absorbed, 60_000e18, "part of the sell");
-        assertEq(paid, 0.05 ether, "spending everything it held");
-        assertEq(pump.potOf(id).balance, 0, "to the wei");
-        assertTrue(_sqrtPrice(id) != before, "and the pool traded the remainder");
+        assertTrue(pumped, "the thin pot still fired");
+        assertEq(spent, 0.04 ether, "spending 80% of what it held");
+        assertEq(pump.potOf(id).balance, 0.01 ether, "keeping the haircut's remainder");
+        assertTrue(_sqrtPrice(id) != before, "and the pool traded the sell itself");
     }
 
     /// U12 — a live recipient is a literal delivery target: the pump's proceeds transfer straight to
@@ -238,40 +240,39 @@ contract GlueHookUnit is GlueHookFixture {
         assertEq(token.balanceOf(DEAD), 0, "and nothing was burned");
     }
 
-    /// U13 — the quotes mirror the live gates: zeros before configuration or funding, real numbers
-    ///       after, and the obligation ledger is pot totals plus parked.
+    /// U13 — the quotes mirror the live gates: zeros before funding, real numbers after, the gate
+    ///       reads whole at the reference, and the obligation ledger is pot totals plus parked.
     function test_U13_viewsAndQuotes() public {
-        // Empty pot: both mechanics stand aside, and the quotes say so
-        (uint256 s1, uint256 p1) = pump.quoteShield(key, -int256(1_000e18));
+        // Empty pot: the pump stands aside, and the quote says so
         (uint256 s2, uint256 p2) = pump.quotePump(key, 1 ether);
-        assertEq(s1 + p1 + s2 + p2, 0, "an empty pot quotes nothing");
+        assertEq(s2 + p2, 0, "an empty pot quotes nothing");
 
         _donateEth(key, 10 ether);
-        (uint256 absorbed, uint256 paid) = pump.quoteShield(key, -int256(1_000e18));
-        assertGt(absorbed, 0, "a funded pot quotes the shield");
-        assertGt(paid, 0, "with a real payout");
         (uint256 spend, uint256 minOut) = pump.quotePump(key, 1 ether);
-        assertGt(spend, 0, "and the pump");
+        assertGt(spend, 0, "a funded pot quotes the pump");
         assertGt(minOut, 0, "with a real floor");
+        (uint256 share, int24 spot, int24 ref) = pump.pumpShareOf(id);
+        assertEq(spot, ref, "a fresh pool sits on its reference");
+        assertEq(share, 0.6e18, "so the gate reads the whole share");
 
         assertEq(pump.obligationOf(ETH), 10 ether, "obligation = pot totals + parked");
         assertEq(pump.parkedOf(address(token)), 0, "nothing parked");
         assertEq(pump.heldOf(address(token)), 0, "and nothing burn-parked");
     }
 
-    /// U14 — a dust sell the pot cannot price into a balanced fill is left entirely to the pool:
-    ///       the zero-rounding guard refuses one-sided fills rather than settling them.
-    function test_U14_dustSellSkipsShield() public {
+    /// U14 — a dust sell that pays the seller nothing carries no demand, so it carries no pump: the
+    ///       pot is untouched while the pool executes the dust itself.
+    function test_U14_dustSellCarriesNoPump() public {
         _donateEth(key, 10 ether);
         uint160 before = _sqrtPrice(id);
 
-        // 500 wei of main: the payout side (ETH, ~1000x scarcer) rounds to zero, but after the fee
+        // 500 wei of main: the proceeds side (ETH, ~1000x scarcer) rounds to zero, but after the fee
         // there is still input left for the pool to execute, so the price must move.
         vm.recordLogs();
         helper.swap(key, false, -int256(500));
-        (bool shielded, , ) = _lastShielded(vm.getRecordedLogs());
+        (bool pumped, , ) = _lastPumped(vm.getRecordedLogs());
 
-        assertFalse(shielded, "a fill that would round to zero is refused");
+        assertFalse(pumped, "zero proceeds size a zero pump");
         assertTrue(_sqrtPrice(id) != before, "and the pool executed the dust sell instead");
         assertEq(pump.potOf(id).balance, 10 ether, "with the pot untouched");
     }

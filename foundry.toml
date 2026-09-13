@@ -23,6 +23,14 @@ libraries = [
 
 test = "test"
 fs_permissions = [{ access = "read", path = "./test/fixtures" }]
+# The auditor-skill suites (test/external/**) are a separate layer: not part of `forge test`, run
+# through the `external` profile below. See test/external/README.md.
+skip = ["test/external/**"]
+
+[profile.external]
+# Inherits the default compiler / gas / invariant / fuzz settings; empty skip so the firm-skill
+# suites compile. Run: FOUNDRY_PROFILE=external forge test --match-path 'test/external/**'
+skip = []
 
 [profile.default.invariant]
 runs = 384

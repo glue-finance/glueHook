@@ -13,28 +13,19 @@ import {GluedV4Core, IPoolManagerMin} from "./GluedV4Core.sol";
 import {GluedMath} from "./GluedMath.sol";
 import {IGlueHook} from "../interfaces/IGlueHook.sol";
 import {IGlueStickMin} from "../interfaces/IGlueStickMin.sol";
+import {IGlueWrapperMin} from "../interfaces/IGlueWrapperMin.sol";
+import {IGlueHookedEngine} from "../interfaces/IGlueHookedEngine.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
-/// @dev The one hook entry the engine calls back INTO: the compound mint runs in its own external
-///      frame so a revert rolls back the mint alone (the whole budget stays in the carry). Under
-///      `delegatecall`, `address(this)` is the hook, so this is a plain self-call.
-interface IGlueHookCompound {
-    function executeCompound(
-        bytes32 id,
-        IPoolManagerMin.PoolKey calldata key,
-        uint256 amount0,
-        uint256 amount1,
-        bool inUnlock
-    ) external returns (uint256 used0, uint256 used1);
-}
-
 /**
  * @title  GlueLiquidity - the LP PROGRAM's harvest and AUTO-COMPOUND engine, extracted for EIP-170.
- * @notice A DELEGATECALL-linked library holding the heavy bodies of the program layer: the two fee
- *         collects (in-swap and own-unlock), the flat gross-referenced harvest split, and the
- *         compound mint itself — the piece that gives a hooked pool the auto-compounding
+ * @notice A DELEGATECALL-linked library holding the heavy bodies of the program layer: the MERGED
+ *         harvest — ONE `modifyLiquidity` that collects the position's fees and re-mints the
+ *         compound budget in the same call, netting the fees against the mint's cost — the flat
+ *         gross-referenced split, and the delivery engine (the Glue burn, the recipient pushes).
+ *         The compound is the piece that gives a hooked pool the auto-compounding
  *         concentrated-liquidity venues lack natively: a selectable `compoundShareWad` of every
  *         harvest, PLUS whatever earlier mints could not place (the CARRY), is re-minted into the
  *         program's own position at the live price, inside the very swaps that generated the
@@ -53,6 +44,9 @@ library GlueLiquidity {
     uint8 private constant OP_ADD_LIQUIDITY = 1;
     /// @dev `GluedV4Callback`'s COLLECT op code, for the own-unlock collect payload.
     uint8 private constant OP_COLLECT_FEES = 3;
+    /// @dev The hook's own HARVEST op code (its `GluedV4Callback` extension): the merged
+    ///      collect + compound mint inside one unlock, handled by {harvestCallback}.
+    uint8 private constant OP_HARVEST = 5;
 
     /// @dev Mirror of {IGlueHook.Harvested}: emitted from the hook's address under delegatecall.
     event Harvested(bytes32 indexed poolId, uint256 mainFees, uint256 secondaryFees, uint256 burned, uint256 fueled);
@@ -81,16 +75,190 @@ library GlueLiquidity {
     /// @dev Mirror of {IGlueHook.FlushedDirect}: emitted from the hook's address under delegatecall.
     event FlushedDirect(bytes32 indexed poolId, address indexed to, uint256 amount);
 
+    /// @dev Mirror of {IGlueHook.HarvestRecorded}: emitted from the hook's address under delegatecall.
+    event HarvestRecorded(bytes32 indexed poolId, address indexed engine, uint256 deliveredMain, uint256 deliveredSec, bool recorded);
+
     /// @dev The Glue Protocol's GlueStick singleton (mirror of the hook's {GlueHook.GLUE_STICK}):
-    ///      the SAME address on every chain. Every burn leg is a pure `unglue` through it, and pot
-    ///      creation ensures the main's glue exists through it (best effort).
-    address private constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    ///      the SAME address on every chain. Pot creation classifies the main through its registry
+    ///      (`wrapperOf`) and ensures the main's glue exists through it (best effort); the burn
+    ///      itself then talks to the main's GlueWrapper directly. Program creation asks it whether
+    ///      the creator is a REGISTERED LP engine (`isRegisteredEngine`) to stamp NATIVE programs.
+    address private constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
 
     /// @dev The hook's transient PAYER slot: `keccak256("GlueHook.payer")`. While set — only ever
     ///      around a liquidity add's unlock — the hook's `_transferToken` settles ERC20 legs straight
     ///      from this address. Transient storage is the hook's own under delegatecall, so the literal
     ///      MUST match the hook's.
     bytes32 private constant PAYER_SLOT = 0x1bde310958327eb1c8a9046a2bb97d1e21ae8a0e23960bbeb793bdf7f87b6f8b;
+
+    // ── Pump sizing parameters (the hook re-exports the public ones) ────────────────
+
+    /// @dev The spend bucket's TIME base: one fee ceiling per this long with no volume at all.
+    uint32 internal constant PUMP_REFILL = 30 minutes;
+    /// @dev The spend bucket's VOLUME credit: `k ×` the fee each funded swap pays.
+    uint256 internal constant PUMP_FEE_LEVERAGE = 4;
+    /// @dev The largest share of a swap's secondary the pump matches (60%).
+    uint256 internal constant PUMP_SHARE_MAX_WAD = 0.6e18;
+    /// @dev Share of the capped spend the pump actually uses (80%).
+    uint256 internal constant PUMP_HAIRCUT_BPS = 8_000;
+    /// @dev Basis-point denominator.
+    uint256 private constant BPS = 10_000;
+    /// @dev V4 fee denominator (a fee is in millionths).
+    uint256 private constant FEE_DENOMINATOR = 1_000_000;
+    /// @dev Millionths to WAD.
+    uint256 private constant FEE_TO_WAD = PRECISION / FEE_DENOMINATOR;
+    /// @dev Rounding allowance on the pump's own output floor (one part in a million).
+    uint256 private constant MIN_OUT_SHAVE = 1e6;
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // PUMP SIZING
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    /**
+     * @notice Size the pump and derive its own output floor (the hook's `_pumpSize` body; see the
+     *         hook for the four ceilings' derivation). Pure arithmetic over the pool's live state and
+     *         the pot's bucket — nothing in here can revert on any input the hook can hand it.
+     * @param pm The PoolManager.
+     * @param key The pool key.
+     * @param id The pool identifier.
+     * @param p The pool's pot (its balance, main and bucket are read).
+     * @param slot0 The pool's live slot0 — the state the swapper's trade left behind.
+     * @param demand Secondary the carrying swap moved.
+     * @param refX8 The reference tick as it stands now, in 1/256ths.
+     * @return spend Secondary to spend on the pump.
+     * @return minOut Output floor for the pump's own swap.
+     * @return bucketCredited The bucket timestamp after this swap's volume credit, before any spend
+     *         — what to store when the pump does not run or reverts.
+     * @return bucketAfter The bucket timestamp after the credit AND this spend — what to store once
+     *         the pump has gone through.
+     */
+    function pumpSize(
+        address pm,
+        IPoolManagerMin.PoolKey calldata key,
+        bytes32 id,
+        IGlueHook.Pot storage p,
+        GluedV4Core.Slot0 memory slot0,
+        uint256 demand,
+        int32 refX8
+    ) external view returns (uint256 spend, uint256 minOut, uint32 bucketCredited, uint32 bucketAfter) {
+        uint256 pot = p.balance;
+        // No pot, or no flow to size against
+        if (pot == 0 || demand == 0) return (0, 0, 0, 0);
+        // Buying main means selling secondary: zeroForOne exactly when main is currency1
+        bool zeroForOne = p.main != key.currency0;
+        // `slot0.lpFee`, never `key.fee`: Slot0 is the fee the pool actually charges (and it
+        // composes with the protocol fee in {GluedV4Core.swapFee}).
+        uint24 fee = GluedV4Core.swapFee(slot0.protocolFee, slot0.lpFee, zeroForOne);
+
+        // 1. The fee ceiling: f·R on the side the pot spends
+        // The secondary is the input, so it is currency0 exactly when the pump swaps zeroForOne
+        uint256 depth = GluedV4Core.tangentReserve(
+            slot0.sqrtPriceX96, GluedV4Core.getPoolLiquidity(pm, id), zeroForOne
+        );
+        uint256 feeCap = GluedMath.md512(depth, fee, FEE_DENOMINATOR);
+        // A pool with no depth, or a zero-fee pool, can never host a pump that cannot be sandwiched
+        if (feeCap == 0) return (0, 0, 0, 0);
+
+        // 2. The spend bucket. Its level is kept as the seconds of time-refill it is worth, so a
+        // volume credit of `k·f·demand` (a share `k·demand/depth` of the ceiling) is
+        // `k·demand·PUMP_REFILL/depth` seconds, and the level is clamped at one ceiling. Wrapping
+        // uint32 arithmetic; a pot no pump has drawn on yet (timestamp zero) reads as full.
+        uint256 budget;
+        {
+            uint32 last = p.pumpBucketTimestamp;
+            uint256 level; // in seconds of refill
+            unchecked { level = uint32(block.timestamp) - last; }
+            if (last == 0 || level >= PUMP_REFILL) level = PUMP_REFILL;
+            else {
+                uint256 credit = GluedMath.md512(PUMP_FEE_LEVERAGE * demand, PUMP_REFILL, depth);
+                level = credit >= PUMP_REFILL - level ? PUMP_REFILL : level + credit;
+            }
+            bucketCredited = _stamp(level);
+            budget = feeCap * level / PUMP_REFILL;
+        }
+        spend = pot < budget ? pot : budget;
+
+        // 3 + 4. The demand ceiling, at the share the reference gate allows at this spot
+        uint256 demandCap =
+            GluedMath.md512(demand, pumpShare(slot0.tick, refX8, fee, !zeroForOne), PRECISION);
+        if (demandCap < spend) spend = demandCap;
+
+        // Strictly inside whichever ceiling won
+        spend = GluedMath.md512(spend, PUMP_HAIRCUT_BPS, BPS);
+        if (spend != 0) {
+            ( , minOut) = GluedV4Core.quoteSwapStep(pm, key, zeroForOne, -int256(spend));
+            // Rounding allowance on a same-transaction quote of the pool's own arithmetic
+            minOut -= minOut / MIN_OUT_SHAVE;
+        }
+        // Without a pool-exact quote there is no floor to enforce, so there is no pump
+        if (minOut == 0) return (0, 0, bucketCredited, bucketCredited);
+
+        // The bucket after this spend: what is left of the budget, expressed as the time it would
+        // have taken to refill — `budget − spend ≤ feeCap`, so this sits within PUMP_REFILL of now
+        bucketAfter = _stamp((budget - spend) * PUMP_REFILL / feeCap);
+    }
+
+    /**
+     * @notice The reference gate's share: the fraction of the carrying swap's secondary the pump
+     *         may match at this spot.
+     * @dev `d` is MAIN's premium over the reference, `1.0001^Δ − 1` for the tick gap `Δ` oriented
+     *      so that a positive gap is a dearer main: a V4 tick is the log-price of currency0 in
+     *      currency1, so the gap is `spot − ref` when main is currency0 (main's price rises with
+     *      the tick) and `ref − spot` when main is currency1 (its reciprocal). The reference is
+     *      rounded to the whole tick on the side that makes the gap read a hair LARGER — the strict
+     *      side. At or below the reference the share is {PUMP_SHARE_MAX_WAD}; above it, `f / d`
+     *      capped there. `f/d`, not `2f/d`: a pusher's round trip costs `2f` per unit pushed, but
+     *      BOTH its legs summon pumps at the premium — the push itself and the dump — so the demand
+     *      the attacker presents at the premium is TWICE what they pushed, and the share that puts
+     *      the round trip at break-even is `f/d`. Pure and bounded: the gap is clamped to the tick
+     *      range, so nothing in here can revert.
+     * @param spotTick The pool's live tick.
+     * @param refX8 The reference tick in 1/256ths.
+     * @param fee The pool's live composed fee in millionths, in the pump's direction.
+     * @param mainIsZero True when main is `currency0`.
+     * @return shareWad The share (1e18 = 100%).
+     */
+    function pumpShare(int24 spotTick, int32 refX8, uint24 fee, bool mainIsZero)
+        public pure returns (uint256 shareWad)
+    {
+        // The arithmetic shift floors the reference; the ceiling is one above whenever a fraction
+        // was cut. Main-is-currency0 wants the floor (a lower reference = a larger gap), main-is-
+        // currency1 the ceiling — either way the premium is never under-stated.
+        int256 ref = int256(refX8) >> 8;
+        int256 above;
+        if (mainIsZero) {
+            above = int256(spotTick) - ref;
+        } else {
+            if (refX8 & 0xFF != 0) ++ref;
+            above = ref - int256(spotTick);
+        }
+        // At or below the reference: no premium to sell into, full share
+        if (above <= 0) return PUMP_SHARE_MAX_WAD;
+        // Clamp into the tick range the sqrt-ratio port accepts (a premium this large is a share of
+        // effectively nothing anyway)
+        if (above > int256(GluedV4Core.MAX_USABLE_TICK)) above = int256(GluedV4Core.MAX_USABLE_TICK);
+
+        // ratio = 1.0001^above in WAD, from its Q64.96 square root
+        uint256 sqrtRatioX96 = GluedV4Core.getSqrtRatioAtTick(int24(above));
+        uint256 ratioWad = GluedMath.md512(
+            GluedMath.md512(sqrtRatioX96, sqrtRatioX96, GluedV4Core.Q96), PRECISION, GluedV4Core.Q96
+        );
+        // One tick above already reads > 1.0001 in WAD, so the premium is strictly positive here
+        if (ratioWad <= PRECISION) return PUMP_SHARE_MAX_WAD;
+        uint256 premiumWad = ratioWad - PRECISION;
+
+        // s = f / d
+        shareWad = GluedMath.md512(uint256(fee) * FEE_TO_WAD, PRECISION, premiumWad);
+        if (shareWad > PUMP_SHARE_MAX_WAD) shareWad = PUMP_SHARE_MAX_WAD;
+    }
+
+    /// @dev A bucket level (seconds of refill it is worth, at most PUMP_REFILL) as the timestamp
+    ///      that encodes it. Zero is the never-drawn sentinel, so a level that lands there is
+    ///      written one second off — nothing.
+    function _stamp(uint256 level) private view returns (uint32 ts) {
+        unchecked { ts = uint32(block.timestamp) - uint32(level); }
+        if (ts == 0) ts = 1;
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // POT ROLES
@@ -101,9 +269,14 @@ library GlueLiquidity {
      *         (`msg.sender` is the original caller under delegatecall), one of the pool's own
      *         currencies becomes MAIN and the other SECONDARY. MAIN must be GLUEABLE — never the
      *         network token and never the chain's canonical wrapped native — because every burn is
-     *         a pure Glue unglue; the declaration also ensures the main's glue exists (best
-     *         effort: a refusal never blocks the pool, later burns just settle to the held ledger).
+     *         a pure Glue unglue. The declaration then CLASSIFIES the main through the GlueStick's
+     *         registry: a GlueWrapper main (the ERC20 face of a glued ERC20 or ERC721 collection)
+     *         is recorded as its own glue — its burn is a PARK on itself — and any other main is
+     *         recorded with its canonical wrapper, created on the spot when missing. Both reads are
+     *         best effort: a refusal never blocks the pool (the glue is retried once at the first
+     *         burn, and later burns settle to the held ledger).
      * @param p The pool's pot.
+     * @param L The hook's delivery/attribution ledgers (the glue registry lives there).
      * @param key The pool key.
      * @param id The pool identifier.
      * @param main The currency to defend.
@@ -112,6 +285,7 @@ library GlueLiquidity {
      */
     function initPot(
         IGlueHook.Pot storage p,
+        IGlueHook.Ledgers storage L,
         IPoolManagerMin.PoolKey calldata key,
         bytes32 id,
         address main,
@@ -138,14 +312,17 @@ library GlueLiquidity {
         p.recipient = recipient;
         p.configured = true;
 
-        // Best-effort glue: make sure the main's wrapper exists so burns route through Glue from
-        // the first swap. Both calls are tolerated failures — a chain without the GlueStick or a
-        // main Glue refuses to admit never blocks the pool; its burns settle to the held ledger.
-        try IGlueStickMin(GLUE_STICK).isStickyAsset(main) returns (bool isSticky, address) {
-            if (!isSticky) {
-                try IGlueStickMin(GLUE_STICK).ensureWrapper(main) returns (address) {} catch {}
-            }
-        } catch {}
+        // Classify the main once, from the GlueStick's own registry (only the Stick writes it, so
+        // the asset cannot fake the answer): a GlueWrapper resolves to ITSELF, a glued sticky to
+        // its wrapper, an unglued asset to zero — then ensure the glue of an unglued main so burns
+        // route through Glue from the first swap. Both are tolerated failures: a chain without the
+        // GlueStick, or a main Glue refuses to admit, never blocks the pool (the first burn retries
+        // the ensure once, then settles to the held ledger).
+        if (L.glue[main] == address(0)) {
+            address glue = _wrapperOf(main);
+            if (glue == address(0)) glue = _tryEnsure(main);
+            if (glue != address(0)) L.glue[main] = glue;
+        }
 
         emit PotInitialized(id, main, secondary, recipient);
     }
@@ -208,7 +385,8 @@ library GlueLiquidity {
      * @notice Move the property role (the hook's {IGlueHook-transferProgramOwnership} body).
      *         Owner-gated. Surrendering the property (`address(0)`) locks the liquidity forever by
      *         construction — `msg.sender` matches nobody — so the harvest gate opens for good: an
-     *         ownerless program must never be manually unharvestable.
+     *         ownerless program must never be manually unharvestable. A NATIVE program's owner is
+     *         its engine forever: the transfer is refused.
      * @param g The pool's program.
      * @param poolId The pool identifier.
      * @param newOwner The new owner (`address(0)` = surrendered).
@@ -216,6 +394,8 @@ library GlueLiquidity {
     function transferOwnership(IGlueHook.Program storage g, bytes32 poolId, address newOwner) external {
         if (!g.exists) revert IGlueHook.PotNotReady();
         if (msg.sender != g.owner) revert IGlueHook.NotAllowed();
+        // NATIVE: the property is pinned to the creating engine — no transfer, no surrender
+        if (g.native) revert IGlueHook.NotAllowed();
         g.owner = newOwner;
         if (newOwner == address(0)) g.publicHarvest = true;
         emit ProgramOwnershipTransferred(poolId, newOwner);
@@ -230,6 +410,11 @@ library GlueLiquidity {
         if (secClaim > PRECISION || mainClaim > PRECISION) revert IGlueHook.BadConfig();
         if (secClaim < PRECISION && cfg.secondaryRecipient == address(0)) revert IGlueHook.BadConfig();
         if (mainClaim < PRECISION && cfg.mainRecipient == address(0)) revert IGlueHook.BadConfig();
+        // NATIVE: both remainder recipients are pinned to the engine (the owner); the operator may
+        // still edit every share, the public-harvest flag and the auto-harvest minimums
+        if (g.native && (cfg.mainRecipient != g.owner || cfg.secondaryRecipient != g.owner)) {
+            revert IGlueHook.BadConfig();
+        }
 
         // THE BUYBACK SPLIT: the pot's output is carved like a fee side — compound + burn ≤ 100%,
         // the exact rest following the pot's recipient. No recipient rule here: the remainder's
@@ -250,6 +435,9 @@ library GlueLiquidity {
         g.mainRecipient = cfg.mainRecipient;
         g.minMain = cfg.minMain;
         g.minSecondary = cfg.minSecondary;
+        // The auto-harvest is armed as soon as ONE side has a real min: the per-swap gate reads
+        // this bit off the program's first slot and skips the pending-fee scan entirely otherwise
+        g.armed = cfg.minMain != type(uint256).max || cfg.minSecondary != type(uint256).max;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -262,7 +450,11 @@ library GlueLiquidity {
      *         Gated to the pot admin (`msg.sender` is the original caller under delegatecall), one
      *         program per pool, config validated here. The tick range is resolved (sentinel `(0,0)`
      *         = full range) and fixed forever: the position's identity in the PoolManager is
-     *         (hook, ticks, salt), so a moving range would orphan the fees.
+     *         (hook, ticks, salt), so a moving range would orphan the fees. A creator the GlueStick
+     *         reports as a REGISTERED LP engine stamps the program NATIVE: owner and both remainder
+     *         recipients are forced to the engine (the passed `owner` and recipients are ignored),
+     *         and every later harvest reports to it ({place}). Any other creator takes the plain
+     *         path unchanged — a codeless or foreign Stick never blocks creation.
      * @param p The pool's pot.
      * @param g The pool's program slot.
      * @param pm The PoolManager.
@@ -298,6 +490,15 @@ library GlueLiquidity {
         // Resolve the sentinel before storing: every later read uses the REAL ticks
         if (tickLower == 0 && tickUpper == 0) {
             (tickLower, tickUpper) = GluedV4Core.fullRangeTicks(key.tickSpacing);
+        }
+
+        // NATIVE stamping: a registered Glue LP engine creating the program is pinned as its owner
+        // and both remainder recipients, once and forever
+        if (_isRegisteredEngine(msg.sender)) {
+            g.native = true;
+            owner = msg.sender;
+            cfg.mainRecipient = msg.sender;
+            cfg.secondaryRecipient = msg.sender;
         }
 
         g.exists = true;
@@ -392,20 +593,329 @@ library GlueLiquidity {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
-    // COLLECTS
+    // HARVEST — the merged collect + compound
     // ═══════════════════════════════════════════════════════════════════════════════
 
     /**
-     * @notice Collect the program's accrued fees while the PoolManager is ALREADY unlocked (the
-     *         in-swap frame): a direct zero-delta `modifyLiquidity`, then take both sides here.
+     * @notice The harvest's body (shared by the hook's in-swap {executeHarvest} self-call and its
+     *         manual {_harvestInto}): collect the program's fees, split them, and re-mint the
+     *         compound budget — in ONE `modifyLiquidity` whenever there is something to mint.
+     * @dev The fees are KNOWN before the position is touched (`f0`/`f1`: the hook's pending-fee
+     *      scan, the same formula V4 runs in `Position.update`), so the compound budget — this
+     *      harvest's slice plus the standing carry — can be sized and minted in the SAME call that
+     *      collects: V4 credits the fees and debits the mint against one delta per currency, and
+     *      only the NET moves (a take when the fees exceed the mint's cost, a settle from the
+     *      hook's carry when they do not). The compounded slice never leaves the PoolManager and
+     *      the second `modifyLiquidity` + its two takes are gone. The merged call self-verifies
+     *      against `feesAccrued` — V4's own fee number for the position — and against the budget
+     *      (the mint may never consume more than the slice + carry): any violation reverts the
+     *      frame. In-swap that revert is caught by the hook's self-call, which re-runs the harvest
+     *      with `mint == false`; manual, the own-unlock is try/caught here. Either way the
+     *      fallback is the COLLECT-ONLY path (a zero-delta `modifyLiquidity`, fees read off V4's
+     *      credit rather than the scan): the harvest lands, the whole compound budget waits in the
+     *      carry — exactly the outcome a failed compound had before the merge.
+     *
+     *      EVERY leg is a fraction of the GROSS of its side: the compound budget and the
+     *      buyback/burn shares are computed from the same base, and each recipient leg is the
+     *      exact remainder (`gross − compound − share`), never a second multiplication — the legs
+     *      sum to the harvest byte-for-byte. What the mint does not consume is saved back into the
+     *      carry and retried at every next harvest, never leaking to the pot or a recipient. The
+     *      pot's buyback share is credited HERE — bookkeeping only — and the outbound legs are
+     *      returned for the hook's send phase, so every send in the frame happens after every write.
+     * @param p The pool's pot (credited with the buyback share).
+     * @param g The pool's program.
+     * @param L The hook's delivery/attribution ledgers.
+     * @param pm The PoolManager.
+     * @param id The pool identifier.
+     * @param key The pool key.
+     * @param f0 Pending currency0 fees per the hook's scan (ignored on the collect-only path).
+     * @param f1 Pending currency1 fees per the hook's scan (ignored on the collect-only path).
+     * @param inUnlock True when the PoolManager is already unlocked (the in-swap frame).
+     * @param mint True to attempt the merged compound mint; false forces the collect-only path.
+     * @return fMain Fees collected on the main side.
+     * @return fSec Fees collected on the secondary side.
+     * @return burnLeg Main-side slice for the burn cascade.
+     * @return mainLeg Main-side slice for the program's main recipient.
+     * @return secLeg Secondary-side slice for the program's secondary recipient.
+     */
+    function harvest(
+        IGlueHook.Pot storage p,
+        IGlueHook.Program storage g,
+        IGlueHook.Ledgers storage L,
+        address pm,
+        bytes32 id,
+        IPoolManagerMin.PoolKey calldata key,
+        uint256 f0,
+        uint256 f1,
+        bool inUnlock,
+        bool mint
+    ) external returns (uint256 fMain, uint256 fSec, uint256 burnLeg, uint256 mainLeg, uint256 secLeg) {
+        // A zero-fee harvest still retries a standing carry; with neither there is nothing to do.
+        // (Without `mint` the scan may not have run — the collect below is the fee source then.)
+        if (mint && (f0 | f1 | g.carryMain | g.carrySecondary) == 0) return (0, 0, 0, 0, 0);
+
+        bool mainIsZero = p.main == key.currency0;
+        // ONE position touch: the merged collect + mint, or the plain collect
+        uint256 used0;
+        uint256 used1;
+        (f0, f1, used0, used1) = _touch(g, pm, id, key, f0, f1, mainIsZero, inUnlock, mint);
+        if ((f0 | f1 | g.carryMain | g.carrySecondary) == 0) return (0, 0, 0, 0, 0);
+
+        (fMain, fSec) = mainIsZero ? (f0, f1) : (f1, f0);
+        (burnLeg, mainLeg, secLeg) = mainIsZero
+            ? _split(p, g, L, id, fMain, fSec, used0, used1)
+            : _split(p, g, L, id, fMain, fSec, used1, used0);
+    }
+
+    /**
+     * @dev The harvest's single position touch. With `mint`, the compound budget — this harvest's
+     *      slice off the scanned fees plus the standing carry, per currency — is sized into
+     *      liquidity at the live price and minted in the SAME `modifyLiquidity` that collects the
+     *      fees ({_mintNetting}); a budget that funds nothing, a `mint == false` call, or a manual
+     *      merged mint that failed its guard fall to the plain zero-delta collect, whose fees are
+     *      read off V4's own credit.
+     * @return c0 Currency0 fees collected (the scan, confirmed, on the merged path).
+     * @return c1 Currency1 fees collected.
+     * @return used0 Currency0 the mint cost (zero on the collect-only path).
+     * @return used1 Currency1 the mint cost.
+     */
+    function _touch(
+        IGlueHook.Program storage g,
+        address pm,
+        bytes32 id,
+        IPoolManagerMin.PoolKey calldata key,
+        uint256 f0,
+        uint256 f1,
+        bool mainIsZero,
+        bool inUnlock,
+        bool mint
+    ) private returns (uint256 c0, uint256 c1, uint256 used0, uint256 used1) {
+        if (mint) {
+            (uint256 b0, uint256 b1) = _budgets(g, f0, f1, mainIsZero);
+            uint128 liq = (b0 | b1) == 0 ? 0 : _liquidityForFees(pm, g, id, b0, b1);
+            if (liq != 0) {
+                bool ok;
+                (ok, used0, used1) = _mintNetting(g, pm, key, liq, f0, f1, b0, b1, inUnlock);
+                if (ok) {
+                    g.liquidity += liq;
+                    emit Compounded(id, liq, used0, used1);
+                    return (f0, f1, used0, used1);
+                }
+            }
+        }
+        // The plain collect: nothing minted, the whole budget will be carried
+        (c0, c1) = inUnlock ? _collectInSwap(pm, g, key) : _collectOwnUnlock(pm, g, key);
+    }
+
+    /// @dev The compound budget per CURRENCY: the compound share of each side's scanned fees plus
+    ///      that side's standing carry.
+    function _budgets(IGlueHook.Program storage g, uint256 f0, uint256 f1, bool mainIsZero)
+        private view returns (uint256 b0, uint256 b1)
+    {
+        uint256 cw = g.compoundShareWad;
+        (uint256 carry0, uint256 carry1) =
+            mainIsZero ? (g.carryMain, g.carrySecondary) : (g.carrySecondary, g.carryMain);
+        b0 = GluedMath.md512(f0, cw, PRECISION) + carry0;
+        b1 = GluedMath.md512(f1, cw, PRECISION) + carry1;
+    }
+
+    /**
+     * @dev THE SPLIT off the gross of each side, the carry bookkeeping and the pot credit — every
+     *      write of the harvest, no send. The recipients take the exact remainders; whatever the
+     *      mint did not place (all of the budget on the collect-only path) goes back into the
+     *      carry — LP-ing is retried forever, never rerouted.
+     * @param uMain Main the mint cost.
+     * @param uSec Secondary the mint cost.
+     */
+    function _split(
+        IGlueHook.Pot storage p,
+        IGlueHook.Program storage g,
+        IGlueHook.Ledgers storage L,
+        bytes32 id,
+        uint256 fMain,
+        uint256 fSec,
+        uint256 uMain,
+        uint256 uSec
+    ) private returns (uint256 burnLeg, uint256 mainLeg, uint256 secLeg) {
+        uint256 cMain = GluedMath.md512(fMain, g.compoundShareWad, PRECISION);
+        uint256 cSec = GluedMath.md512(fSec, g.compoundShareWad, PRECISION);
+        uint256 buyLeg = GluedMath.md512(fSec, g.buybackShareWad, PRECISION);
+        burnLeg = GluedMath.md512(fMain, g.burnShareWad, PRECISION);
+        secLeg = fSec - cSec - buyLeg;
+        mainLeg = fMain - cMain - burnLeg;
+
+        // THE CARRY: this harvest's slice plus everything carried, minus what the mint placed
+        uint256 budgetMain = cMain + g.carryMain;
+        uint256 budgetSec = cSec + g.carrySecondary;
+        if ((budgetMain | budgetSec) != 0) {
+            L.carryTotal[p.main] = L.carryTotal[p.main] + (budgetMain - uMain) - g.carryMain;
+            L.carryTotal[p.secondary] = L.carryTotal[p.secondary] + (budgetSec - uSec) - g.carrySecondary;
+            g.carryMain = budgetMain - uMain;
+            g.carrySecondary = budgetSec - uSec;
+        }
+
+        if (buyLeg != 0) {
+            p.balance += buyLeg;
+            L.potTotal[p.secondary] += buyLeg;
+        }
+
+        emit Harvested(id, fMain, fSec, burnLeg, buyLeg);
+    }
+
+    /**
+     * @notice The HARVEST unlock's callback body (the hook's `GluedV4Callback` extension for
+     *         {OP_HARVEST}, reached from the manual path's own unlock): the merged mint, verified
+     *         and settled inside the unlock frame so a violation reverts the whole unlock — which
+     *         {harvest} catches and answers with the collect-only path.
+     * @param pm The PoolManager.
+     * @param params The op payload: `(key, liquidity, salt, tickLower, tickUpper, f0, f1, b0, b1)`.
+     * @return ABI-encoded `(used0, used1)` — what the mint really cost per currency.
+     */
+    function harvestCallback(address pm, bytes memory params) external returns (bytes memory) {
+        (
+            IPoolManagerMin.PoolKey memory key,
+            int256 liquidityDelta,
+            bytes32 salt,
+            int24 tickLower,
+            int24 tickUpper,
+            uint256 f0,
+            uint256 f1,
+            uint256 b0,
+            uint256 b1
+        ) = abi.decode(params, (IPoolManagerMin.PoolKey, int256, bytes32, int24, int24, uint256, uint256, uint256, uint256));
+
+        (int256 callerDelta, int256 feesAccrued) = IPoolManagerMin(pm).modifyLiquidity(
+            key,
+            IPoolManagerMin.ModifyLiquidityParams({
+                tickLower: tickLower, tickUpper: tickUpper, liquidityDelta: liquidityDelta, salt: salt
+            }),
+            ""
+        );
+        (uint256 used0, uint256 used1) = _settleMerged(pm, key, callerDelta, feesAccrued, f0, f1, b0, b1);
+        return abi.encode(used0, used1);
+    }
+
+    /**
+     * @dev The merged mint: ONE `modifyLiquidity(+liq)` that collects the fees and pays the mint
+     *      out of them. In-swap the PoolManager is already unlocked, so the call is direct and a
+     *      violation reverts the frame (the hook's self-call catches it). Manual, it opens the
+     *      hook's own HARVEST unlock, try/caught here: a failure reports `ok == false` and the
+     *      caller falls back to the collect-only path.
+     * @param g The pool's program (its fixed ticks identify the position).
+     * @param pm The PoolManager.
+     * @param key The pool key.
+     * @param liq Liquidity units the compound budget funds.
+     * @param f0 Scanned currency0 fees (verified against V4's `feesAccrued`).
+     * @param f1 Scanned currency1 fees.
+     * @param b0 Currency0 compound budget (slice + carry): the mint's cost cap.
+     * @param b1 Currency1 compound budget.
+     * @param inUnlock True when the PoolManager is already unlocked (the in-swap frame).
+     * @return ok True when the merged mint went through (always, in-swap: a failure reverts).
+     * @return used0 Currency0 the mint cost.
+     * @return used1 Currency1 the mint cost.
+     */
+    function _mintNetting(
+        IGlueHook.Program storage g,
+        address pm,
+        IPoolManagerMin.PoolKey calldata key,
+        uint128 liq,
+        uint256 f0,
+        uint256 f1,
+        uint256 b0,
+        uint256 b1,
+        bool inUnlock
+    ) private returns (bool ok, uint256 used0, uint256 used1) {
+        if (inUnlock) {
+            (int256 callerDelta, int256 feesAccrued) = IPoolManagerMin(pm).modifyLiquidity(
+                key,
+                IPoolManagerMin.ModifyLiquidityParams({
+                    tickLower: g.tickLower,
+                    tickUpper: g.tickUpper,
+                    liquidityDelta: int256(uint256(liq)),
+                    salt: GluedV4Core.positionSalt(address(this))
+                }),
+                ""
+            );
+            (used0, used1) = _settleMerged(pm, key, callerDelta, feesAccrued, f0, f1, b0, b1);
+            return (true, used0, used1);
+        }
+
+        // Outside any unlock (manual harvest, liquidity ops): the hook's own HARVEST unlock, whose
+        // callback ({harvestCallback}) mints, verifies and settles from the hook's own balance
+        try IPoolManagerMin(pm).unlock(
+            abi.encode(
+                OP_HARVEST,
+                key,
+                int256(uint256(liq)),
+                GluedV4Core.positionSalt(address(this)),
+                g.tickLower,
+                g.tickUpper,
+                f0,
+                f1,
+                b0,
+                b1
+            )
+        ) returns (bytes memory ret) {
+            (used0, used1) = abi.decode(ret, (uint256, uint256));
+            ok = true;
+        } catch {}
+    }
+
+    /**
+     * @dev Verify and settle a merged `modifyLiquidity(+liq)`. V4 credits the position's fees and
+     *      debits the mint's principal against ONE delta per currency, and reports the fees on
+     *      their own as `feesAccrued`. Two checks, both fatal to the frame: V4's fee number must
+     *      equal the scan the split was sized from (`f0`/`f1`), and the mint's cost — the fees
+     *      minus the net delta — must fit the compound budget (`b0`/`b1`), so the mint can never
+     *      touch a wei of pot, parked, held, owed or recipient money. Then only the NET moves: a
+     *      positive leg is taken to the hook (fees beyond the mint), a negative one settled from
+     *      the hook's own balance (the carry the mint is deploying, at most `b − f` per side).
+     * @return used0 Currency0 the mint cost.
+     * @return used1 Currency1 the mint cost.
+     */
+    function _settleMerged(
+        address pm,
+        IPoolManagerMin.PoolKey memory key,
+        int256 callerDelta,
+        int256 feesAccrued,
+        uint256 f0,
+        uint256 f1,
+        uint256 b0,
+        uint256 b1
+    ) private returns (uint256 used0, uint256 used1) {
+        (int128 d0, int128 d1) = _unpack(callerDelta);
+        (int128 a0, int128 a1) = _unpack(feesAccrued);
+        // V4's own fee credit must be exactly what the split was sized from
+        if (a0 < 0 || a1 < 0 || uint256(uint128(a0)) != f0 || uint256(uint128(a1)) != f1) {
+            revert IGlueHook.QuoteMismatch();
+        }
+        // The mint's cost is the fees minus the net; a mint never credits beyond the fees
+        int256 c0 = int256(f0) - int256(d0);
+        int256 c1 = int256(f1) - int256(d1);
+        if (c0 < 0 || c1 < 0) revert IGlueHook.QuoteMismatch();
+        used0 = uint256(c0);
+        used1 = uint256(c1);
+        // The mint may never outspend the budget; a 1-wei round-up edge abandons the compound
+        if (used0 > b0 || used1 > b1) revert IGlueHook.QuoteMismatch();
+
+        // Only the net moves, once per currency
+        if (d0 > 0) IPoolManagerMin(pm).take(key.currency0, address(this), uint256(uint128(d0)));
+        else if (d0 < 0) _settle(pm, key.currency0, uint256(uint128(-d0)));
+        if (d1 > 0) IPoolManagerMin(pm).take(key.currency1, address(this), uint256(uint128(d1)));
+        else if (d1 < 0) _settle(pm, key.currency1, uint256(uint128(-d1)));
+    }
+
+    /**
+     * @dev Collect the program's accrued fees while the PoolManager is ALREADY unlocked (the
+     *      in-swap frame): a direct zero-delta `modifyLiquidity`, then take both sides here.
      * @param pm The PoolManager.
      * @param g The pool's program (its fixed ticks identify the position).
      * @param key The pool key.
      * @return f0 Currency0 fees taken to the hook.
      * @return f1 Currency1 fees taken to the hook.
      */
-    function collectInSwap(address pm, IGlueHook.Program storage g, IPoolManagerMin.PoolKey calldata key)
-        external returns (uint256 f0, uint256 f1)
+    function _collectInSwap(address pm, IGlueHook.Program storage g, IPoolManagerMin.PoolKey calldata key)
+        private returns (uint256 f0, uint256 f1)
     {
         (int256 callerDelta, ) = IPoolManagerMin(pm).modifyLiquidity(
             key,
@@ -429,16 +939,16 @@ library GlueLiquidity {
     }
 
     /**
-     * @notice Collect the program's accrued fees OUTSIDE any unlock (manual harvest, liquidity ops):
-     *         opens the hook's own COLLECT unlock, whose callback takes both sides to the hook.
+     * @dev Collect the program's accrued fees OUTSIDE any unlock (manual harvest, liquidity ops):
+     *      opens the hook's own COLLECT unlock, whose callback takes both sides to the hook.
      * @param pm The PoolManager.
      * @param g The pool's program.
      * @param key The pool key.
      * @return f0 Currency0 fees taken to the hook.
      * @return f1 Currency1 fees taken to the hook.
      */
-    function collectOwnUnlock(address pm, IGlueHook.Program storage g, IPoolManagerMin.PoolKey calldata key)
-        external returns (uint256 f0, uint256 f1)
+    function _collectOwnUnlock(address pm, IGlueHook.Program storage g, IPoolManagerMin.PoolKey calldata key)
+        private returns (uint256 f0, uint256 f1)
     {
         // The callback lands on the hook's own `unlockCallback` (address preserved by delegatecall);
         // with no transient recipient set, its takes default to the hook - exactly where fees belong
@@ -458,81 +968,12 @@ library GlueLiquidity {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
-    // SPLIT
-    // ═══════════════════════════════════════════════════════════════════════════════
-
-    /**
-     * @notice Split freshly collected fees by the program's rules. EVERY leg is a fraction of the
-     *         GROSS of its side: the compound budget and the buyback/burn shares are computed from
-     *         the same base, and each recipient leg is the exact remainder
-     *         (`gross − compound − share`), never a second multiplication — the legs sum to the
-     *         harvest byte-for-byte. The compound then mints against its budget PLUS everything an
-     *         earlier mint could not place (the CARRY): what this mint does not consume is saved
-     *         back into the carry and retried at every next harvest, never leaking to the pot or a
-     *         recipient. The pot's buyback share is credited HERE — bookkeeping only — and the
-     *         outbound legs are returned for the hook's send phase, so every send in the frame
-     *         happens after every write.
-     * @param p The pool's pot (credited with the buyback share).
-     * @param g The pool's program.
-     * @param L The hook's delivery/attribution ledgers.
-     * @param id The pool identifier.
-     * @param key The pool key (the compound mints into the program's position).
-     * @param fMain Fees collected on the main side.
-     * @param fSec Fees collected on the secondary side.
-     * @param inUnlock True when the PoolManager is already unlocked (the in-swap frame).
-     * @return burnLeg Main-side slice for the burn cascade.
-     * @return mainLeg Main-side slice for the program's main recipient.
-     * @return secLeg Secondary-side slice for the program's secondary recipient.
-     */
-    function splitHarvest(
-        IGlueHook.Pot storage p,
-        IGlueHook.Program storage g,
-        IGlueHook.Ledgers storage L,
-        bytes32 id,
-        IPoolManagerMin.PoolKey calldata key,
-        uint256 fMain,
-        uint256 fSec,
-        bool inUnlock
-    ) external returns (uint256 burnLeg, uint256 mainLeg, uint256 secLeg) {
-        // A zero-fee harvest still retries a standing carry; with neither there is nothing to do
-        if ((fMain | fSec) == 0 && (g.carryMain | g.carrySecondary) == 0) return (0, 0, 0);
-
-        // Every leg off the GROSS of its side (floor); the recipients take the exact remainders
-        uint256 cMain = GluedMath.md512(fMain, g.compoundShareWad, PRECISION);
-        uint256 cSec = GluedMath.md512(fSec, g.compoundShareWad, PRECISION);
-        uint256 buyLeg = GluedMath.md512(fSec, g.buybackShareWad, PRECISION);
-        burnLeg = GluedMath.md512(fMain, g.burnShareWad, PRECISION);
-        secLeg = fSec - cSec - buyLeg;
-        mainLeg = fMain - cMain - burnLeg;
-
-        // COMPOUND: this harvest's budget plus everything carried from earlier mints. Whatever the
-        // mint does not place goes back into the carry — LP-ing is retried forever, never rerouted.
-        uint256 budgetMain = cMain + g.carryMain;
-        uint256 budgetSec = cSec + g.carrySecondary;
-        if ((budgetMain | budgetSec) != 0) {
-            (uint256 uMain, uint256 uSec) =
-                _compoundSlice(p.main == key.currency0, id, key, budgetMain, budgetSec, inUnlock);
-            L.carryTotal[p.main] = L.carryTotal[p.main] + (budgetMain - uMain) - g.carryMain;
-            L.carryTotal[p.secondary] = L.carryTotal[p.secondary] + (budgetSec - uSec) - g.carrySecondary;
-            g.carryMain = budgetMain - uMain;
-            g.carrySecondary = budgetSec - uSec;
-        }
-
-        if (buyLeg != 0) {
-            p.balance += buyLeg;
-            L.potTotal[p.secondary] += buyLeg;
-        }
-
-        emit Harvested(id, fMain, fSec, burnLeg, buyLeg);
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════════
     // PLACEMENT — the delivery engine (buyback split, cascade, payouts)
     // ═══════════════════════════════════════════════════════════════════════════════
 
     /**
      * @notice Place every outbound leg of a frame — the ONLY sends, after ALL bookkeeping. The
-     *         pot's output (`potOut` — pump-bought or shield-absorbed main) runs the BUYBACK SPLIT
+     *         pot's output (`potOut` — the main a pump bought) runs the BUYBACK SPLIT
      *         first: `potCompoundShareWad` joins the program's main-side compound carry (buy
      *         pressure becoming the pool's own liquidity at the next harvest's mint),
      *         `potBurnShareWad` joins the burn cascade, and the EXACT rest follows the pot's
@@ -540,7 +981,7 @@ library GlueLiquidity {
      *         (park-with-retry on refusal), `address(0)` merges it into the frame's single cascade
      *         walk. A pool with NO program has zero shares by construction (a non-existent
      *         program's storage is zero), so its pot output is always delivered whole.
-     * @dev Nothing here can revert the carrying swap: pushes are bounded and report, refusals park
+     * @dev Nothing here can revert the carrying swap: pushes report instead of reverting, refusals park
      *      or book, the carry credit is pure bookkeeping, and the burn cascade falls through to
      *      the terminal hold.
      * @param p The pool's pot.
@@ -550,7 +991,7 @@ library GlueLiquidity {
      * @param burnLeg Main-side harvest slice for the burn cascade.
      * @param mainLeg Main-side harvest slice for the program's main recipient.
      * @param secLeg Secondary-side harvest slice for the program's secondary recipient.
-     * @param potOut The pot's output: main the pump just bought or the shield just absorbed.
+     * @param potOut The pot's output: main the pump just bought.
      */
     function place(
         IGlueHook.Pot storage p,
@@ -595,9 +1036,55 @@ library GlueLiquidity {
         if (potOut != 0) _deliver(p, L, id, main, potOut);
         // ONE cascade walk for every burn-intent leg of the frame
         if (burnLeg != 0) _burn(L, id, main, burnLeg);
-        // The program's own harvest legs
-        if (mainLeg != 0) _payRecipient(L, g.mainRecipient, main, mainLeg);
-        if (secLeg != 0) _payRecipient(L, g.secondaryRecipient, p.secondary, secLeg);
+        // The program's own harvest legs, each reporting what actually LANDED (0 when booked owed)
+        uint256 dMain;
+        uint256 dSec;
+        if (mainLeg != 0) dMain = _payRecipient(L, g.mainRecipient, main, mainLeg);
+        if (secLeg != 0) dSec = _payRecipient(L, g.secondaryRecipient, p.secondary, secLeg);
+
+        // NATIVE: advance the delivered ledger and report the frame to the engine — AFTER every
+        // send of the frame, so nothing the engine does can touch a delivery, the pot or the swap
+        if (g.native) _recordHarvest(L, id, g.owner, main, p.secondary, dMain, dSec);
+    }
+
+    /**
+     * @dev The native program's harvest report. The per-`(pool, asset)` DELIVERED ledger moves by
+     *      exactly what landed on the engine this frame (a leg booked to `owed` counts only in the
+     *      frame whose successful push folds it in), then `recordHarvest` runs with the carrying
+     *      call's gas forwarded (the EVM's 63/64 rule is the only bound), its revert swallowed and
+     *      its return data ignored: the callback is pure bookkeeping on the engine's side and the
+     *      engine reconciles a failed one from the ledger. No gas stipend on purpose: the callee is
+     *      a Glue-registered engine (pinned at pool creation), so the callback's cost is the
+     *      engine's own — a fixed number baked into this immutable hook would drift with every
+     *      engine upgrade and every chain gas repricing, while unused gas is refunded either way.
+     *      The one consequence a broken engine (or a sticky token whose transfer burns gas inside
+     *      the engine's wrap) can have is an out-of-gas swap on ITS OWN pool — the same standing
+     *      Uniswap gives a hook or a token that breaks. A frame that landed nothing on the engine
+     *      is not reported. Under delegatecall the engine sees `msg.sender == hook`.
+     * @param L The hook's delivery/attribution ledgers.
+     * @param id The pool identifier.
+     * @param engine The native program's engine (its owner and both recipients).
+     * @param main The pool's main currency.
+     * @param secondary The pool's secondary currency.
+     * @param dMain Main-side remainder delivered this frame.
+     * @param dSec Secondary-side remainder delivered this frame.
+     */
+    function _recordHarvest(
+        IGlueHook.Ledgers storage L,
+        bytes32 id,
+        address engine,
+        address main,
+        address secondary,
+        uint256 dMain,
+        uint256 dSec
+    ) private {
+        // Nothing landed: the ledger stands and the engine has nothing to attribute
+        if ((dMain | dSec) == 0) return;
+        if (dMain != 0) L.deliveredCum[id][main] += dMain;
+        if (dSec != 0) L.deliveredCum[id][secondary] += dSec;
+        // Non-bubbling report at full forwarded gas: a revert or an out-of-gas only flips the flag
+        (bool ok, ) = engine.call(abi.encodeCall(IGlueHookedEngine.recordHarvest, (id, dMain, dSec)));
+        emit HarvestRecorded(id, engine, dMain, dSec, ok);
     }
 
     /**
@@ -630,7 +1117,7 @@ library GlueLiquidity {
 
     /**
      * @dev Place main with a LIVE recipient, without ever being able to revert the swap that
-     *      produced it: a bounded-gas ETH send when main is the network token, a non-reverting
+     *      produced it: a non-reverting ETH send when main is the network token, a non-reverting
      *      `transfer` otherwise; a refusal parks the main, booked per pool for {flushDirect}.
      */
     function _deliver(
@@ -650,22 +1137,44 @@ library GlueLiquidity {
     }
 
     /**
-     * @dev The burn, never able to revert the carrying swap. THE burn is the Glue Protocol's own:
-     *      a pure `unglue` through the GlueStick with an EMPTY collateral list — the supply is
-     *      pulled from the hook and destroyed inside the protocol (which runs its own burn /
-     *      dead-route fallbacks), redeeming nothing and concentrating the glue's backing for every
-     *      remaining holder. The hook never destroys supply itself. Accepted only on a verified
-     *      balance drop; a refusal flags the asset unburnable, so later burns of it skip the probe
+     * @dev The burn, never able to revert the carrying swap. THE burn is the Glue Protocol's own,
+     *      in the shape the main's classification ({initPot}) dictates:
+     *
+     *        - The main IS a GlueWrapper (`glue[asset] == asset`): PARK. The shares are transferred
+     *          to the wrapper's own address — the one custody Glue's supply oracle subtracts from
+     *          the circulating supply, for arbitrary wei amounts, in both ERC20 and NFT mode (a
+     *          wrapper's `unglue` cannot burn its own shares: NFT mode needs whole units and rejects
+     *          the empty-collateral shape, ERC20 mode pulls RAW sticky the hook never holds).
+     *        - Any other main: a pure `unglue` called on the main's canonical wrapper with an EMPTY
+     *          collateral list — the supply is pulled from the hook's exact allowance and destroyed
+     *          inside the protocol (which runs its own burn / dead-route fallbacks), redeeming
+     *          nothing and concentrating the glue's backing for every remaining holder. A main
+     *          whose glue was unknown at declaration is glued lazily, once, here.
+     *
+     *      The hook never destroys supply itself. Every leg is accepted only on a verified balance
+     *      drop; a refused unglue flags the asset unburnable, so later burns of it skip the probe
      *      and settle straight to the held ledger — HELD on the hook FOREVER, no withdrawal path
-     *      exists, so custody IS the burn.
+     *      exists, so custody IS the burn. A refused park never flags: it is one plain transfer a
+     *      real wrapper cannot refuse, so the next leg simply retries it.
      */
     function _burn(IGlueHook.Ledgers storage L, bytes32 id, address asset, uint256 amount) private {
-        // A known non-glueable skips the probe: straight to the terminal hold
-        if (!L.unburnable[asset]) {
-            // 1. The Glue burn (a fresh main lazy-glues inside `unglue` itself if the creation-time
-            //    ensure was ever missed), verified by the hook's own balance drop
-            if (_tryUnglue(asset, amount)) {
-                emit Delivered(id, GLUE_STICK, amount, IGlueHook.Delivery.BURNED);
+        address glue = L.glue[asset];
+        if (glue == asset) {
+            // 1a. PARK: shares owned by the wrapper itself are out of circulation for Glue
+            if (_tryTransfer(asset, asset, amount)) {
+                emit Delivered(id, asset, amount, IGlueHook.Delivery.BURNED);
+                return;
+            }
+        } else if (!L.unburnable[asset]) {
+            // A known non-glueable skips the probe: straight to the terminal hold
+            if (glue == address(0)) {
+                // Lazy glue: the creation-time ensure was refused or the GlueStick was codeless
+                glue = _tryEnsure(asset);
+                if (glue != address(0)) L.glue[asset] = glue;
+            }
+            // 1b. The Glue burn through the main's wrapper, verified by the hook's own balance drop
+            if (glue != address(0) && _tryUnglue(glue, asset, amount)) {
+                emit Delivered(id, glue, amount, IGlueHook.Delivery.BURNED);
                 return;
             }
 
@@ -682,9 +1191,11 @@ library GlueLiquidity {
      * @dev Push a harvest leg to its recipient, folding in any backlog owed to the same pair. A
      *      success clears the backlog; a refusal books the NEW amount on top of it (the backlog
      *      was already booked) and never reverts.
+     * @return delivered What actually landed on `to`: `amount + backlog` on a successful push,
+     *         zero when the leg was booked to `owed`.
      */
     function _payRecipient(IGlueHook.Ledgers storage L, address to, address asset, uint256 amount)
-        private
+        private returns (uint256 delivered)
     {
         uint256 backlog = L.owed[to][asset];
         if (_pushRaw(to, asset, amount + backlog)) {
@@ -692,7 +1203,8 @@ library GlueLiquidity {
                 delete L.owed[to][asset];
                 L.owedTotal[asset] -= backlog;
             }
-            emit Paid(to, asset, amount + backlog);
+            delivered = amount + backlog;
+            emit Paid(to, asset, delivered);
         } else {
             L.owed[to][asset] += amount;
             L.owedTotal[asset] += amount;
@@ -700,43 +1212,87 @@ library GlueLiquidity {
         }
     }
 
-    /// @dev One bounded, non-reverting push: the gas-capped native send or the tolerant ERC20 transfer.
+    /// @dev One non-reverting push: the native send or the tolerant ERC20 transfer, both reporting.
     function _pushRaw(address to, address asset, uint256 amount) private returns (bool ok) {
         if (amount == 0) return true;
         return asset == address(0) ? _sendEth(to, amount) : _tryTransfer(asset, to, amount);
     }
 
-    /// @dev Bounded-gas native send, reporting failure instead of reverting so a delivery can be
-    ///      parked and retried. The 30,000-gas stipend covers a plain `receive()` but denies a
-    ///      hostile recipient enough gas to do anything that could brick the carrying swap.
+    /// @dev Native send at the carrying call's gas, reporting failure instead of reverting so a
+    ///      delivery can be parked or booked and retried. No gas stipend, the same way Uniswap moves
+    ///      ETH (`call(gas(), …)`): a fixed number in this immutable hook would drift with every
+    ///      chain gas repricing and push a legitimate smart-contract recipient out of the push path
+    ///      for good. What a recipient can do with the gas is bounded by the transient guard, not by
+    ///      gas: every value-moving entry of the hook is `guarded`, so a re-entry bounces. What a
+    ///      recipient that BURNS gas can do is fail the swap on the pool whose program or pot named
+    ///      it (the 1/64 the EVM keeps may not finish the frame) — its own pool, the standing
+    ///      Uniswap gives a hook or a token that breaks. Refusals still land in `owed` / the park,
+    ///      both reachable through full-gas doors (`claim`, `flushDirect`).
     function _sendEth(address to, uint256 amount) private returns (bool ok) {
-        (ok, ) = to.call{value: amount, gas: 30_000}("");
+        (ok, ) = to.call{value: amount}("");
     }
 
-    /// @dev The pure Glue burn: an exact-amount approval to the GlueStick, then `unglue` with an
-    ///      EMPTY collateral list. Accepted only when the hook's balance really fell by `amount` —
-    ///      a codeless GlueStick (a chain the Glue Protocol never reached) or a lying token falls
+    /// @dev The pure Glue burn: an exact-amount approval to the main's GlueWrapper, then the
+    ///      wrapper's own `unglue` with an EMPTY collateral list (no GlueStick hop — the wrapper
+    ///      pulls the raw sticky from `msg.sender` and destroys it in-protocol). Accepted only when
+    ///      the hook's balance really fell by `amount` — a codeless glue or a lying token falls
     ///      through instead of counting as burned. Every leg is tolerant: a failure reports false
     ///      (the caller settles to the held ledger) and never reverts the carrying swap.
-    function _tryUnglue(address token, uint256 amount) private returns (bool ok) {
+    /// @param glue The main's canonical GlueWrapper (never the main itself: that is a park).
+    /// @param token The main being burned.
+    /// @param amount The raw amount to destroy.
+    function _tryUnglue(address glue, address token, uint256 amount) private returns (bool ok) {
         uint256 balBefore = IERC20(token).balanceOf(address(this));
         if (balBefore < amount) return false;
 
         // Exact-amount approval, tolerant of odd ERC20s (missing return data is accepted)
-        (bool aOk, bytes memory aData) = token.call(abi.encodeCall(IERC20.approve, (GLUE_STICK, amount)));
+        (bool aOk, bytes memory aData) = token.call(abi.encodeCall(IERC20.approve, (glue, amount)));
         if (!(aOk && (aData.length == 0 || (aData.length >= 32 && abi.decode(aData, (bool)))))) return false;
 
         // Pure burn: empty collaterals redeem nothing, the pulled supply is destroyed in-protocol
-        (bool s, ) = GLUE_STICK.call(
-            abi.encodeCall(IGlueStickMin.unglue, (token, new address[](0), amount, address(this), false))
+        (bool s, ) = glue.call(
+            abi.encodeCall(IGlueWrapperMin.unglue, (new address[](0), amount, address(this)))
         );
 
         ok = s && IERC20(token).balanceOf(address(this)) <= balBefore - amount;
         if (!ok) {
-            // Clear the dangling allowance; its own failure is ignorable (the GlueStick only ever
-            // pulls inside the hook's own unglue call, so a stale allowance moves nothing)
-            (aOk, ) = token.call(abi.encodeCall(IERC20.approve, (GLUE_STICK, 0)));
+            // Clear the dangling allowance; its own failure is ignorable (a GlueWrapper only ever
+            // pulls ERC20 from `msg.sender` inside the caller's own call, so a stale allowance
+            // moves nothing)
+            (aOk, ) = token.call(abi.encodeCall(IERC20.approve, (glue, 0)));
         }
+    }
+
+    /// @dev The GlueStick's registry read, tolerant of a codeless Stick (a chain the Glue Protocol
+    ///      never reached): `wrapperOf(asset)` is the asset itself for a GlueWrapper, its canonical
+    ///      wrapper for a glued sticky, zero for an unglued asset — or zero when the call fails.
+    function _wrapperOf(address asset) private view returns (address glue) {
+        (bool s, bytes memory data) =
+            GLUE_STICK.staticcall(abi.encodeCall(IGlueStickMin.wrapperOf, (asset)));
+        if (s && data.length >= 32) glue = abi.decode(data, (address));
+    }
+
+    /// @dev The GlueStick's engine-registry read, tolerant: true only when the Stick answers a
+    ///      well-formed `true` to `isRegisteredEngine(who)`; a codeless or foreign Stick, a revert or
+    ///      short or malformed return data all read as false, so the plain (non-native) path is
+    ///      never blocked (a raw word compare instead of `abi.decode`, which would revert on a
+    ///      non-boolean word).
+    function _isRegisteredEngine(address who) private view returns (bool registered) {
+        (bool s, bytes memory data) =
+            GLUE_STICK.staticcall(abi.encodeCall(IGlueStickMin.isRegisteredEngine, (who)));
+        if (s && data.length >= 32) {
+            uint256 word;
+            assembly ("memory-safe") { word := mload(add(data, 32)) }
+            registered = word == 1;
+        }
+    }
+
+    /// @dev The GlueStick's validated creation chokepoint, tolerant: clones the asset's glue when
+    ///      missing and returns it, or zero when the Stick refuses the asset (the network wrapper,
+    ///      a wrap-of-a-wrap, a non-conforming contract) or has no code.
+    function _tryEnsure(address asset) private returns (address glue) {
+        (bool s, bytes memory data) = GLUE_STICK.call(abi.encodeCall(IGlueStickMin.ensureWrapper, (asset)));
+        if (s && data.length >= 32) glue = abi.decode(data, (address));
     }
 
     /// @dev ERC20 transfer that reports failure instead of reverting, so the cascade can move on.
@@ -746,129 +1302,16 @@ library GlueLiquidity {
         ok = success && (data.length == 0 || (data.length >= 32 && abi.decode(data, (bool))));
     }
 
-    /**
-     * @dev Run the compound budget through the hook's {IGlueHookCompound-executeCompound} self-call.
-     *      A failed compound (any revert in the mint) is a valid outcome: nothing was consumed, the
-     *      whole budget stays in the carry, and the harvest never blocks on the compound.
-     * @param mainIsZero True when the pot's main is `currency0`.
-     * @param id The pool identifier.
-     * @param key The pool key.
-     * @param budgetMain Main-side compound budget (this harvest's slice + the carry).
-     * @param budgetSec Secondary-side compound budget (this harvest's slice + the carry).
-     * @param inUnlock True when the PoolManager is already unlocked.
-     * @return uMain Main the mint actually consumed.
-     * @return uSec Secondary the mint actually consumed.
-     */
-    function _compoundSlice(
-        bool mainIsZero,
-        bytes32 id,
-        IPoolManagerMin.PoolKey calldata key,
-        uint256 budgetMain,
-        uint256 budgetSec,
-        bool inUnlock
-    ) private returns (uint256 uMain, uint256 uSec) {
-        (uint256 a0, uint256 a1) = mainIsZero ? (budgetMain, budgetSec) : (budgetSec, budgetMain);
-
-        // Self-call (address(this) is the hook): a revert in the mint abandons the compound alone
-        try IGlueHookCompound(address(this)).executeCompound(id, key, a0, a1, inUnlock)
-            returns (uint256 u0, uint256 u1)
-        {
-            (uMain, uSec) = mainIsZero ? (u0, u1) : (u1, u0);
-        } catch {}
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════════
-    // COMPOUND MINT
+    // COMPOUND SIZING
     // ═══════════════════════════════════════════════════════════════════════════════
-
-    /**
-     * @notice The compound mint's body (the hook's {executeCompound} is a thin self-gated forwarder).
-     * @dev Converts the compound budget (this harvest's slice + the standing carry) into liquidity
-     *      at the LIVE price across the program's own fixed range - anchored on whichever side
-     *      binds ({_liquidityForFees}) - and mints it into the program's position. Inside a swap
-     *      (`inUnlock`) the PoolManager is already unlocked, so the mint is a direct
-     *      `modifyLiquidity` settled from the hook's own balance (the fees this frame just took
-     *      plus the carried funds it already held); outside, it opens the hook's ADD unlock with
-     *      the transient PAYER unset, which settles from the hook's balance the same way. Either
-     *      way the mint may NEVER consume more than the budget put on the table: a round-up edge
-     *      abandons the whole compound (the split's try/catch leaves the budget in the carry)
-     *      rather than touching a wei of pot, parked, held or owed money.
-     * @param g The pool's program.
-     * @param pm The PoolManager.
-     * @param id The pool identifier.
-     * @param key The pool key.
-     * @param amount0 Currency0 budget (the compound slice + carry on that side).
-     * @param amount1 Currency1 budget.
-     * @param inUnlock True when the PoolManager is already unlocked (the in-swap frame).
-     * @return used0 Currency0 the mint actually consumed.
-     * @return used1 Currency1 the mint actually consumed.
-     */
-    function compound(
-        IGlueHook.Program storage g,
-        address pm,
-        bytes32 id,
-        IPoolManagerMin.PoolKey calldata key,
-        uint256 amount0,
-        uint256 amount1,
-        bool inUnlock
-    ) external returns (uint256 used0, uint256 used1) {
-        uint128 liquidity = _liquidityForFees(pm, g, id, amount0, amount1);
-        // A budget too small (or one-sided against an in-range position) compounds nothing —
-        // it stays in the carry and retries next harvest
-        if (liquidity == 0) return (0, 0);
-
-        int128 d0;
-        int128 d1;
-        if (inUnlock) {
-            // Already unlocked (the in-swap frame): mint directly and settle what the mint owes
-            (int256 callerDelta, ) = IPoolManagerMin(pm).modifyLiquidity(
-                key,
-                IPoolManagerMin.ModifyLiquidityParams({
-                    tickLower: g.tickLower,
-                    tickUpper: g.tickUpper,
-                    liquidityDelta: int256(uint256(liquidity)),
-                    salt: GluedV4Core.positionSalt(address(this))
-                }),
-                ""
-            );
-            (d0, d1) = _unpack(callerDelta);
-            // The frame collected the position's fees before splitting, so a positive leg is
-            // impossible - anything else means the delta is not a pure mint, so abandon
-            if (d0 > 0 || d1 > 0) revert IGlueHook.QuoteMismatch();
-            if (d0 < 0) _settle(pm, key.currency0, uint256(uint128(-d0)));
-            if (d1 < 0) _settle(pm, key.currency1, uint256(uint128(-d1)));
-        } else {
-            // Outside any unlock (manual harvest, liquidity ops): the hook's ADD unlock. The
-            // transient PAYER is unset here, so the ERC20 legs settle from the hook's own balance -
-            // exactly the fees this compound is spending.
-            bytes memory ret = IPoolManagerMin(pm).unlock(
-                abi.encode(
-                    OP_ADD_LIQUIDITY,
-                    key,
-                    int256(uint256(liquidity)),
-                    GluedV4Core.positionSalt(address(this)),
-                    g.tickLower,
-                    g.tickUpper
-                )
-            );
-            (d0, d1) = abi.decode(ret, (int128, int128));
-        }
-
-        used0 = d0 < 0 ? uint256(uint128(-d0)) : 0;
-        used1 = d1 < 0 ? uint256(uint128(-d1)) : 0;
-        // The mint may never outspend the budget; a 1-wei round-up edge abandons the compound
-        if (used0 > amount0 || used1 > amount1) revert IGlueHook.QuoteMismatch();
-
-        g.liquidity += liquidity;
-        emit Compounded(id, liquidity, used0, used1);
-    }
 
     /**
      * @dev Liquidity the compound budget can fund across the program's fixed range at the live
      *      price, per the standard three cases: below the range only currency0 funds it, above it
      *      only currency1, inside it whichever side binds (the minimum). Floor math end to end, so
      *      the amounts the mint then rounds up stay within the budget in all but 1-wei edge cases -
-     *      which {compound}'s budget check catches.
+     *      which {_settleMerged}'s budget check catches.
      * @param pm The PoolManager.
      * @param g The pool's program.
      * @param id The pool identifier.

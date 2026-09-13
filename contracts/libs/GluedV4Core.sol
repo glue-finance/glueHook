@@ -310,6 +310,11 @@ interface IPoolManagerMin {
     /// @param slot The slot to read
     /// @dev Read raw storage slot (EIP-2330). Used for reading Slot0 via StateLibrary pattern.
     function extsload(bytes32 slot) external view returns (bytes32);
+
+    /// @notice Read several raw storage slots in ONE call
+    /// @param slots The slots to read
+    /// @return values The slot values, in order
+    function extsload(bytes32[] calldata slots) external view returns (bytes32[] memory values);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -644,28 +649,62 @@ library GluedV4Core {
             tickUpper = MAX_TICK;
         }
 
-        // Read the position's liquidity and last recorded fee growth snapshots from V4 storage
-        (uint128 liq, uint256 fg0Last, uint256 fg1Last) = getPositionInfo(
-            poolManager, poolId, owner, tickLower, tickUpper, salt
-        );
+        // ONE batched extsload for the ten words the computation needs (the position's three, the
+        // pool's slot0 and two global accumulators, each boundary tick's two fee-outside words)
+        // instead of ten single-slot calls: same slots, same numbers, one external round-trip.
+        bytes32 stateSlot = keccak256(abi.encodePacked(poolId, POOLS_SLOT));
+        bytes32[] memory slots = new bytes32[](10);
+        {
+            bytes32 posSlot = keccak256(
+                abi.encodePacked(
+                    keccak256(abi.encodePacked(owner, tickLower, tickUpper, salt)),
+                    bytes32(uint256(stateSlot) + POSITIONS_OFFSET)
+                )
+            );
+            bytes32 lowerSlot = keccak256(abi.encodePacked(int256(tickLower), bytes32(uint256(stateSlot) + TICKS_OFFSET)));
+            bytes32 upperSlot = keccak256(abi.encodePacked(int256(tickUpper), bytes32(uint256(stateSlot) + TICKS_OFFSET)));
+            slots[0] = posSlot;                                                     // liquidity
+            slots[1] = bytes32(uint256(posSlot) + 1);                               // feeGrowthInside0Last
+            slots[2] = bytes32(uint256(posSlot) + 2);                               // feeGrowthInside1Last
+            slots[3] = stateSlot;                                                   // slot0 (tick)
+            slots[4] = bytes32(uint256(stateSlot) + FEE_GROWTH_GLOBAL0_OFFSET);     // feeGrowthGlobal0
+            slots[5] = bytes32(uint256(stateSlot) + FEE_GROWTH_GLOBAL0_OFFSET + 1); // feeGrowthGlobal1
+            slots[6] = bytes32(uint256(lowerSlot) + 1);                             // lower feeGrowthOutside0
+            slots[7] = bytes32(uint256(lowerSlot) + 2);                             // lower feeGrowthOutside1
+            slots[8] = bytes32(uint256(upperSlot) + 1);                             // upper feeGrowthOutside0
+            slots[9] = bytes32(uint256(upperSlot) + 2);                             // upper feeGrowthOutside1
+        }
+        bytes32[] memory v = IPoolManagerMin(poolManager).extsload(slots);
+
         // No liquidity → no fees to collect
+        uint128 liq = uint128(uint256(v[0]));
         if (liq == 0) return (0, 0);
 
-        // Read the current fee growth inside the tick range (computed from global and tick data)
-        (uint256 fg0Inside, uint256 fg1Inside) = getFeeGrowthInside(
-            poolManager, poolId, tickLower, tickUpper
-        );
+        // The current tick: bits 160..183 of slot0, sign-extended (matches getSlot0)
+        int24 tick;
+        assembly {
+            tick := signextend(2, shr(160, mload(add(v, 0x80))))
+        }
+        uint256 fg0 = uint256(v[4]);
+        uint256 fg1 = uint256(v[5]);
 
         unchecked {
+            // Fee growth inside = global − below − above (wrapping arithmetic intentional per V4
+            // spec; matches StateLibrary.getFeeGrowthInside — see {getFeeGrowthInside})
+            uint256 below0;
+            uint256 below1;
+            if (tick >= tickLower) { below0 = uint256(v[6]); below1 = uint256(v[7]); }
+            else { below0 = fg0 - uint256(v[6]); below1 = fg1 - uint256(v[7]); }
+            uint256 above0;
+            uint256 above1;
+            if (tick < tickUpper) { above0 = uint256(v[8]); above1 = uint256(v[9]); }
+            else { above0 = fg0 - uint256(v[8]); above1 = fg1 - uint256(v[9]); }
+
             // Fee delta = current inside − last snapshot (wrapping subtract, per V4 spec)
-            // Growth in currency0 fees since last position interaction
-            uint256 delta0 = fg0Inside - fg0Last;
-            // Growth in currency1 fees since last position interaction
-            uint256 delta1 = fg1Inside - fg1Last;
+            uint256 delta0 = (fg0 - below0 - above0) - uint256(v[1]);
+            uint256 delta1 = (fg1 - below1 - above1) - uint256(v[2]);
             // Fees earned = liquidity * feeGrowthDelta / Q128 (matches V4 Position.calculatePositionFees)
-            // Currency0 (ETH) fees pending collection
             pendingFees0 = GluedMath.md512(uint256(liq), delta0, Q128);
-            // Currency1 (token) fees pending collection
             pendingFees1 = GluedMath.md512(uint256(liq), delta1, Q128);
         }
     }
@@ -1690,12 +1729,15 @@ library GluedV4Core {
         // Swap if lower > upper to ensure consistent ordering
         if (sqrtLowerX96 > sqrtUpperX96) (sqrtLowerX96, sqrtUpperX96) = (sqrtUpperX96, sqrtLowerX96);
         // amount0 = L * Q96 * (sqrtUpper - sqrtLower) / (sqrtLower * sqrtUpper)
-        // Split into two md512 calls: first L*Q96/sqrtUpper, then * delta / sqrtLower
+        // Exactly V4's SqrtPriceMath.getAmount0Delta (floor form): the 512-bit product
+        // (L << 96) * delta / sqrtUpper is taken FIRST, then divided by sqrtLower. Splitting the
+        // other way (L*Q96/sqrtUpper first) floors an intermediate that is a two-digit integer at
+        // the max tick and lands ~1% low on a full-range position.
         return GluedMath.md512(
-            GluedMath.md512(uint256(liquidity), Q96, uint256(sqrtUpperX96)),
+            uint256(liquidity) << 96,
             uint256(sqrtUpperX96) - uint256(sqrtLowerX96),
-            uint256(sqrtLowerX96)
-        );
+            uint256(sqrtUpperX96)
+        ) / uint256(sqrtLowerX96);
     }
 
     /**
@@ -1958,9 +2000,16 @@ abstract contract GluedV4Callback {
             return _handleRemoveLiquidity(params);
         }
         
-        // Invalid opType — should never reach here (OP_SWAP is reserved: the hook swaps in-place
-        // inside the carrying swap's own unlock via _swapInUnlock, never through a fresh unlock)
-        revert("Unknown operation");
+        // Any other op is the inheriting contract's own (OP_SWAP is reserved: the hook swaps
+        // in-place inside the carrying swap's own unlock via _swapInUnlock, never through a fresh
+        // unlock). The default extension knows none and reverts.
+        return _handleExtension(opType, params);
+    }
+
+    /// @dev Extension point for an inheriting contract's own unlock ops (codes above OP_SWAP).
+    ///      Called inside the PoolManager's callback with the op's params; the default reverts.
+    function _handleExtension(uint8, bytes memory) internal virtual returns (bytes memory) {
+        revert Unauthorized();
     }
     
     // ═══════════════════════════════════════════════════════════════════════════════

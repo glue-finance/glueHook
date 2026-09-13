@@ -6,6 +6,8 @@ broadcast/
 .env.*
 .deployer.key
 .deployer.*.key
+# private deployment record: chain registry, per-generation addresses + journal, ops secrets
+.deploy/
 *.local.md
 package-lock.json
 .DS_Store
@@ -13,6 +15,7 @@ package-lock.json
 # local ops tooling (deploys, verification, probes, sweeps) — the repo ships
 # only the code and what's needed to run the tests. The root package.json only
 # serves the deploy scripts (tests run through forge); web/package.json stays.
-scripts/
+scripts/*
+!scripts/run-external.sh
 web/scripts/
 /package.json

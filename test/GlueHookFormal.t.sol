@@ -4,7 +4,7 @@ pragma solidity ^0.8.35;
 import {Vm} from "forge-std/Vm.sol";
 import {GlueHookFixture} from "./helpers/GlueHookFixture.sol";
 import {IGlueHook} from "../contracts/interfaces/IGlueHook.sol";
-import {IPoolManagerMin} from "../contracts/libs/GluedV4Core.sol";
+import {GluedV4Core, IPoolManagerMin} from "../contracts/libs/GluedV4Core.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /// @dev A recipient that refuses every pushed ETH delivery, then pulls its own backlog with `claim`
@@ -25,16 +25,18 @@ contract RefusesEth {
 
 /**
  * @title  GlueHookFormal — fuzzed proofs of the load-bearing arithmetic.
- * @notice FM1–FM12. These are the properties the audit's math section states as theorems, discharged
+ * @notice FM1–FM15. These are the properties the audit's math section states as theorems, discharged
  *         against the REAL PoolManager over hundreds of random pot sizes, buy sizes, sell sizes and
  *         split configurations:
  *
- *   FM1  pump spend is bounded by 0.8·min(pot, feeCap, userIn) — never the pot, never the buy, always
- *        strictly inside the fee ceiling once the haircut applies
- *   FM2  pump spend is monotone in the carrying buy — a bigger buy never yields a smaller pump
- *   FM3  a fully-absorbed sell pays EXACTLY what a hookless twin pool pays, to the wei, and moves the
- *        hooked pool not at all (the shield's pool-equivalence, fuzzed)
- *   FM4  the shield never pays more than the pot and never returns a one-sided (unsettleable) fill
+ *   FM1  pump spend is bounded by 0.8·min(pot, feeCap, 60%·demand) — never the pot, never more than
+ *        the gated share of the carrying trade, always strictly inside the fee ceiling
+ *   FM2  pump spend is monotone in the carrying trade — a bigger trade never yields a smaller pump
+ *   FM3  a sell into a rich pot pays the seller EXACTLY what a hookless twin pool pays, to the wei —
+ *        the pump behind it never touches their execution and never lifts the price back above
+ *        where the sell started (the seller's pool-equivalence, fuzzed)
+ *   FM4  the reference gate's share is sane at every premium: capped at 60%, never above `f/d`
+ *        above the reference, the full 60% at or below it
  *   FM5  a live pump's realised spend never exceeds its own quote, and its output clears its floor
  *   FM6  the quote functions are pure previews — calling them never mutates a pot
  *   FM7  the harvest split conserves EXACTLY under arbitrary share pairs — floor WAD legs, remainders
@@ -43,13 +45,18 @@ contract RefusesEth {
  *        and full conservation holds with the mint's unplaced budget sitting in the CARRY
  *   FM9  a refused push books EXACTLY the refused leg in the owed ledger, the obligation covers it,
  *        and `claim` later drains it to the wei
- *   FM10 self-sandwich accounting — the pump the attacker summons is capped by their own buy, any ETH
- *        extracted is strictly less than what the pot spent, and every pot spend burned real supply:
- *        the "attack" is a filled buy order from the pot's perspective (GH-1's boundary, fuzzed)
+ *   FM10 self-sandwich accounting — the pump the attacker summons is capped by the gated share of
+ *        their own buy, the round trip never ends ETH-positive, and every pot spend burned real
+ *        supply: the "attack" is a filled buy order from the pot's perspective (fuzzed)
  *   FM11 auto-compound monotone growth — an armed program's liquidity never decreases through any
  *        trade, whatever the compound share, sizes or direction mix, with custody solvent throughout
  *   FM12 global carry conservation — over a whole sequence of harvests, Σ compound slices equals
  *        Σ mint consumption plus the final carry, per side to the wei
+ *   FM13 the pace bound — over any fuzzed sequence of trades and waits the pot spends at most
+ *        `k·f·Σdemand + feeCap·(1 + elapsed/PUMP_REFILL)`
+ *   FM14 the rise bound — between any two observations the reference rises at most 296·dt/60 ticks
+ *        toward a dearer main, and never past the tick that stood
+ *   FM15 the credit, exact — from a drained bucket a dip of demand D pumps 0.8·min(feeCap, left + k·f·D)
  */
 contract GlueHookFormal is GlueHookFixture {
     MockERC20 token;
@@ -59,6 +66,8 @@ contract GlueHookFormal is GlueHookFixture {
 
     uint256 constant HAIRCUT_BPS = 8_000;
     uint256 constant BPS = 10_000;
+    /// @dev The gate's full share, in force at or below the reference (the launch price here).
+    uint256 constant SHARE_MAX = 0.6e18;
 
     function setUp() public {
         _deployCore();
@@ -70,8 +79,10 @@ contract GlueHookFormal is GlueHookFixture {
         token.approve(address(pump), type(uint256).max);
     }
 
-    /// FM1 — the pump's spend obeys `spend ≤ 0.8·min(pot, feeCap, userIn)`, so it never exceeds the
-    ///       pot, never exceeds the carrying buy, and always sits strictly inside the fee ceiling.
+    /// FM1 — the pump's spend obeys `spend ≤ 0.8·min(pot, feeCap, s·demand)` with `s` the gate's
+    ///       share — the full 60% here, the pool sitting at its reference — so it never exceeds the
+    ///       pot, never exceeds 48% of the carrying trade, and always sits strictly inside the fee
+    ///       ceiling (`0.8 · 0.3% · 100 ETH` of tangent depth).
     function testFuzz_FM1_pumpSpendBounds(uint256 potSize, uint256 userIn) public {
         potSize = bound(potSize, 0.001 ether, 500 ether);
         userIn = bound(userIn, 1e9, 100 ether);
@@ -80,14 +91,15 @@ contract GlueHookFormal is GlueHookFixture {
         (uint256 spend, uint256 minOut) = pump.quotePump(key, userIn);
 
         assertLe(spend, potSize, "spend never exceeds the pot");
-        // spend ≤ 0.8·userIn (the haircut applied to the demand ceiling, floored)
-        assertLe(spend, (userIn * HAIRCUT_BPS) / BPS, "spend never exceeds 0.8x the carrying buy");
+        // spend ≤ 0.8·0.6·demand (the haircut applied to the gated demand ceiling, floored)
+        assertLe(spend, (((userIn * SHARE_MAX) / 1e18) * HAIRCUT_BPS) / BPS, "spend never exceeds 48% of the trade");
+        assertLe(spend, (0.3 ether * HAIRCUT_BPS) / BPS + 1, "and never the haircut fee ceiling");
         // Whenever the pump fires, it has a real output floor to enforce
         if (spend > 0) assertGt(minOut, 0, "a firing pump always carries a floor");
     }
 
-    /// FM2 — a larger carrying buy never yields a smaller pump: spend is monotone non-decreasing in
-    ///       `userIn` (rising until the fee ceiling, then flat).
+    /// FM2 — a larger carrying trade never yields a smaller pump: spend is monotone non-decreasing in
+    ///       the demand (rising until the fee ceiling, then flat).
     function testFuzz_FM2_pumpMonotoneInBuy(uint256 potSize, uint256 aIn, uint256 bIn) public {
         potSize = bound(potSize, 1 ether, 500 ether);
         aIn = bound(aIn, 1e9, 100 ether);
@@ -99,44 +111,69 @@ contract GlueHookFormal is GlueHookFixture {
         assertLe(spendA, spendB, "a bigger buy cannot pump less");
     }
 
-    /// FM3 — a fully-absorbed sell pays exactly the hookless twin, to the wei, and never moves the
-    ///       hooked pool. Fuzzed over sell sizes against a pot rich enough to take them whole.
-    function testFuzz_FM3_fullAbsorbParity(uint256 sellSize) public {
+    /// FM3 — a sell into a rich pot pays the seller exactly the hookless twin, to the wei: the pump
+    ///       runs behind the trade and never touches it. The pump then lifts the price back — but
+    ///       never above where the sell started, since it spends under half of what the seller got.
+    ///       Fuzzed over sell sizes against a pot rich enough that only the fee ceiling binds.
+    function testFuzz_FM3_sellerParity(uint256 sellSize) public {
         sellSize = bound(sellSize, 1e15, 40_000e18);
-        _donateEth(key, 2_000 ether); // rich enough that any bounded sell is affordable
+        _donateEth(key, 2_000 ether);
 
         uint256 snap = vm.snapshotState();
         uint160 priceBefore = _sqrtPrice(id);
         uint256 ethBefore = address(helper).balance;
         vm.recordLogs();
         helper.swap(key, false, -int256(sellSize));
-        (bool shielded, uint256 absorbed, ) = _lastShielded(vm.getRecordedLogs());
-        uint256 shieldPayout = address(helper).balance - ethBefore;
-
-        // Only assert parity when the pot took the WHOLE sell (the property's precondition)
-        if (shielded && absorbed == sellSize) {
-            assertEq(_sqrtPrice(id), priceBefore, "a full absorb never moves the hooked pool");
-            vm.revertToState(snap);
-            ethBefore = address(helper).balance;
-            helper.swap(twin, false, -int256(sellSize));
-            uint256 twinPayout = address(helper).balance - ethBefore;
-            assertEq(shieldPayout, twinPayout, "and pays exactly what the twin pool would");
-        }
+        (bool pumped, uint256 spent, ) = _lastPumped(vm.getRecordedLogs());
+        uint256 hookedPayout = address(helper).balance - ethBefore;
+        uint160 priceAfter = _sqrtPrice(id);
         vm.revertToState(snap);
+
+        ethBefore = address(helper).balance;
+        helper.swap(twin, false, -int256(sellSize));
+        uint256 twinPayout = address(helper).balance - ethBefore;
+        vm.revertToState(snap);
+
+        assertEq(hookedPayout, twinPayout, "the seller is paid exactly what the twin pool pays");
+        // Main is currency1: a dearer main is a LOWER sqrt ratio, so "never above the sell's start"
+        // reads as the ratio never falling back under where it was
+        assertGe(priceAfter, priceBefore, "and the pump never lifts main's price above the sell's start");
+        if (pumped) {
+            assertLe(spent, (((hookedPayout * SHARE_MAX) / 1e18) * HAIRCUT_BPS) / BPS + 1,
+                "the pump spends at most 48% of what the seller received");
+        }
     }
 
-    /// FM4 — the shield quote is always settleable and never overpays: `paid ≤ pot`, `absorbed ≤`
-    ///       the offered input, and a fill is never one-sided (both legs zero or both non-zero).
-    function testFuzz_FM4_shieldQuoteSane(uint256 potSize, uint256 sellSize) public {
-        potSize = bound(potSize, 1 wei, 1_000 ether);
-        sellSize = bound(sellSize, 1, 100_000e18);
-        _donateEth(key, potSize);
+    /// FM4 — the reference gate's share is sane at every premium. A fuzzed push lifts spot over the
+    ///       reference (the launch price, held in the same block); the share the gate reports is
+    ///       capped at 60%, is the full 60% up to the 0.5% premium where `f/d` crosses it, and above
+    ///       that satisfies `share · d ≤ f` — the push-and-farm break-even with BOTH legs of the
+    ///       round trip summoning pumps, `d` computed exactly from the tick gap the hook itself used.
+    function testFuzz_FM4_gateShareSane(uint256 pushIn) public {
+        pushIn = bound(pushIn, 1e12, 300 ether);
+        _donateEth(key, 1 ether);
+        helper.swap(key, true, -int256(pushIn));
 
-        (uint256 absorbed, uint256 paid) = pump.quoteShield(key, -int256(sellSize));
-
-        assertLe(paid, potSize, "the shield never pays more than the pot holds");
-        assertLe(absorbed, sellSize, "and never absorbs more than was offered");
-        assertEq(absorbed == 0, paid == 0, "a fill is never one-sided");
+        (uint256 share, int24 spot, int24 ref) = pump.pumpShareOf(id);
+        assertLe(share, SHARE_MAX, "never above the maximum share");
+        // Main is currency1: a dearer main is a LOWER tick, so the premium gap is `ref − spot`
+        if (spot >= ref) {
+            assertEq(share, SHARE_MAX, "at or below the reference the share is whole");
+            return;
+        }
+        // d = 1.0001^(ref − spot) − 1, in WAD, from the same sqrt-ratio port the hook uses
+        uint256 sqrtR = GluedV4Core.getSqrtRatioAtTick(ref - spot);
+        uint256 ratioWad = (((sqrtR * sqrtR) >> 96) * 1e18) >> 96;
+        uint256 dWad = ratioWad - 1e18;
+        // f in WAD for a 0.3% pool
+        uint256 feeWad = 0.003e18;
+        if (dWad * SHARE_MAX <= feeWad * 1e18) {
+            assertEq(share, SHARE_MAX, "below the crossing premium the share is still whole");
+        } else {
+            // share·d ≤ f (a hair of rounding slack on the WAD products)
+            assertLe((share * dWad) / 1e18, feeWad + 1e9, "above it, share x premium never exceeds f");
+            assertGt(share, 0, "but the gate never closes outright");
+        }
     }
 
     /// FM5 — a live pump's realised spend never exceeds what its own quote sized, and the main it
@@ -166,31 +203,30 @@ contract GlueHookFormal is GlueHookFixture {
         _donateEth(key, potSize);
 
         uint256 balBefore = pump.potOf(id).balance;
+        IGlueHook.Pot memory before = pump.potOf(id);
         pump.quotePump(key, amt);
-        pump.quoteShield(key, -int256(amt));
-        pump.quoteShield(key, int256(amt));
+        pump.pumpShareOf(id);
         assertEq(pump.potOf(id).balance, balBefore, "a quote never spends");
+        assertEq(pump.potOf(id).referenceTickX8, before.referenceTickX8, "nor moves the reference");
+        assertEq(pump.potOf(id).lastTimestamp, before.lastTimestamp, "nor observes");
     }
 
     /// FM10 — SELF-SANDWICH ACCOUNTING, both sides of the ledger. An attacker who buys purely to
-    ///        summon the pump and then dumps the whole bag through the shield is playing a game the
-    ///        pot is DESIGNED to accept: the pot's mandate is to convert its inventory into bought-
-    ///        and-burned main at the pool's own execution price, and that is exactly what happens.
-    ///        Fuzzed over every pot depth and attack size, the theorem is three-sided:
+    ///        summon the pump and then dumps the whole bag is playing a game the pot is DESIGNED to
+    ///        accept: the pot's mandate is to convert its inventory into bought-and-burned main, and
+    ///        that is exactly what happens. Fuzzed over every pot depth and attack size, the theorem
+    ///        is three-sided:
     ///
-    ///        1. the pump the attacker summons never spends more than their own buy carried
-    ///           (`spend ≤ 0.8·userIn` — forcing a bigger pump costs proportionally more real money);
-    ///        2. whatever ETH the attacker walks away with is STRICTLY less than what the pot spent —
-    ///           extraction is never leveraged, and the difference is captured by the pool's LPs as
-    ///           fees, so the attacker is financing the venue to farm the pot;
+    ///        1. the pump the attacker's buy summons never spends more than the gated share of that
+    ///           buy (`spend ≤ 0.8·0.6·attackIn` at most, less once their own push lifts spot over
+    ///           the reference — forcing a bigger pump costs proportionally more real money);
+    ///        2. the round trip never ends ETH-POSITIVE: the fee ceiling bounds what the buy-side
+    ///           pump can lift the price by below what the attacker pays in fees, and the sell-side
+    ///           pump fires behind their dump, where they cannot sell into it;
     ///        3. every wei the pot spent converted into main that was actually BURNED — supply went
     ///           down. From the hook's perspective the "attack" is a filled buy order: the attacker
     ///           risked real capital (open inventory that anyone else can sandwich, fees on both
     ///           legs) to deliver the pot the tokens it exists to buy.
-    ///
-    ///        This is finding GH-1's boundary, fuzzed. What is NOT possible: profiting without
-    ///        putting real size at risk (1), taking out more than the pot chose to spend (2), or
-    ///        making the pot spend without burning (3).
     function testFuzz_FM10_selfSandwichAccounting(uint256 potSize, uint256 attackIn) public {
         potSize = bound(potSize, 0.001 ether, 1_000 ether);
         attackIn = bound(attackIn, 1e12, 60 ether);
@@ -206,30 +242,25 @@ contract GlueHookFormal is GlueHookFixture {
         // The attacker's own buy is the only thing that can carry the pump…
         (, int256 gotTok) = helper.swap(key, true, -int256(attackIn));
 
-        // …and the pump it summons never spends more than the attack itself paid in
+        // …and the pump it summons never spends more than the gated share of the attack itself
         uint256 pumpSpent = potBefore - pump.potOf(id).balance;
-        assertLe(pumpSpent, (attackIn * HAIRCUT_BPS) / BPS,
-            "the pump's spend is capped by the attacker's own money");
+        assertLe(pumpSpent, (((attackIn * SHARE_MAX) / 1e18) * HAIRCUT_BPS) / BPS,
+            "the pump's spend is capped by the gated share of the attacker's own money");
 
-        // The attacker dumps the entire bag — the shield buys what it can at pool-equivalent terms
+        // The attacker dumps the entire bag — a pump fires behind the dump, out of their reach
         if (gotTok > 0) helper.swap(key, false, -gotTok);
 
         uint256 potSpent = potBefore - pump.potOf(id).balance;
-        uint256 profit = address(helper).balance > ethBefore ? address(helper).balance - ethBefore : 0;
         // Burned = supply reduction (a native burn) plus the 0xdEaD fallthrough (this mock has no burn())
         uint256 burned = (supplyBefore - token.totalSupply()) + (token.balanceOf(address(0xdEaD)) - deadBefore);
 
         assertEq(token.balanceOf(address(helper)), tokBefore, "attacker ends token-flat");
-        // (2) extraction is bounded by the pot's own deliberate spend — never leveraged
-        assertLe(profit, potSpent,
-            "the attacker can never take out more ETH than the pot spent buying main");
+        // (2) the round trip never pays
+        assertLe(address(helper).balance, ethBefore, "the attacker never ends ETH-positive");
         // (3) the pot's whole spend is accounted as bought main — burned outright, or (for a
         //     dust-sized fill below the delivery threshold) held on the hook for the next delivery
         uint256 acquired = burned + (token.balanceOf(address(pump)) - hookTokBefore);
         if (potSpent > 0) assertGt(acquired, 0, "every pot spend converted into bought main");
-        if (profit > 0) {
-            assertGt(acquired, 0, "an extraction round always hands the pot the main it wanted");
-        }
     }
 
     /// @dev A program config literal for the split theorems.
@@ -481,5 +512,140 @@ contract GlueHookFormal is GlueHookFixture {
         assertGe(now_, last, "the third trade never shrinks it either");
         assertGe(address(pump).balance, pump.obligationOf(ETH), "ETH solvency at rest");
         assertGe(token.balanceOf(address(pump)), pump.obligationOf(address(token)), "token solvency at rest");
+    }
+}
+
+/**
+ * @title  GlueHookFormalPacing — the pacing theorems (FM13–FM15), in their own contract so the
+ *         fuzz loops' locals never crowd the main suite's stack.
+ */
+contract GlueHookFormalPacing is GlueHookFixture {
+    MockERC20 token;
+    IPoolManagerMin.PoolKey key;
+    bytes32 id;
+
+    uint256 constant HAIRCUT_BPS = 8_000;
+    uint256 constant BPS = 10_000;
+    uint256 constant SHARE_MAX = 0.6e18;
+
+    function setUp() public {
+        _deployCore();
+        token = new MockERC20("Main", "MAIN", 18);
+        (key, id) = _openEthPool(address(token), address(0));
+    }
+
+    /// @dev The pool's fee ceiling `f·R` on the ETH side at the live price.
+    function _feeCap() internal view returns (uint256) {
+        GluedV4Core.Slot0 memory s = GluedV4Core.getSlot0(POOL_MANAGER, id);
+        return (GluedV4Core.tangentReserve(
+            s.sqrtPriceX96, GluedV4Core.getPoolLiquidity(POOL_MANAGER, id), true
+        ) * FEE) / 1e6;
+    }
+
+    /// FM13 — THE PACE BOUND, fuzzed. Over any sequence of trades (both directions, random sizes)
+    ///        and waits (zero to hours), the pot's total spend never exceeds
+    ///        `k·f·Σ demand + feeCap_max · (1 + elapsed / PUMP_REFILL)`: `k×` the LP fees the flow
+    ///        earned, plus the time floor, plus the bucket it started with. The pot cannot be
+    ///        drained faster than the pool is used, whoever is trading.
+    function testFuzz_FM13_paceBound(uint256 seed, uint256 potSize) public {
+        potSize = bound(potSize, 1 ether, 500 ether);
+        _donateEth(key, potSize);
+        vm.warp(block.timestamp + 1 hours); // start from a full bucket
+        vm.roll(block.number + 1);
+        uint256 potBefore = pump.potOf(id).balance;
+        // Accumulated from the waits, NOT `block.timestamp − t0`: under via-IR the optimiser may
+        // rematerialise `block.timestamp` at its use site (it is invariant within a real
+        // transaction), which `vm.warp` breaks — a captured `t0` would read the post-warp clock.
+        uint256 elapsed;
+        uint256 demandSum;
+        uint256 feeCapMax = _feeCap();
+
+        for (uint256 i; i < 16; ++i) {
+            uint256 r = uint256(keccak256(abi.encode(seed, i)));
+            uint256 wait = r % 3 == 0 ? 0 : (r >> 8) % 2 hours;
+            vm.warp(block.timestamp + wait);
+            vm.roll(block.number + (wait == 0 ? 0 : 1));
+            elapsed += wait;
+            uint256 ethBefore = address(helper).balance;
+            if (r % 2 == 0) {
+                helper.swap(key, true, -int256(1 + (r >> 16) % 30 ether));
+                demandSum += ethBefore - address(helper).balance;
+            } else {
+                uint256 tok = 1 + (r >> 16) % 30_000e18;
+                uint256 have = token.balanceOf(address(helper));
+                if (tok > have) tok = have;
+                if (tok != 0) helper.swap(key, false, -int256(tok));
+                demandSum += address(helper).balance - ethBefore;
+            }
+            uint256 fc = _feeCap();
+            if (fc > feeCapMax) feeCapMax = fc;
+        }
+        uint256 spent = potBefore - pump.potOf(id).balance;
+        uint256 bound_ = (pump.PUMP_FEE_LEVERAGE() * FEE * demandSum) / 1e6
+            + feeCapMax + (feeCapMax * elapsed) / pump.PUMP_REFILL();
+        assertLe(spent, bound_ + bound_ / 100, "pot spend <= k.f.volume + floor + opening bucket");
+    }
+
+    /// FM14 — THE RISE BOUND, fuzzed. Between any two observations the reference never moves in
+    ///        main's dearer direction by more than `296 · dt / 60` ticks (plus a 1/256th of
+    ///        rounding), whatever stood in between; falls are only bounded by where spot stood.
+    function testFuzz_FM14_riseBound(uint256 seed) public {
+        _donateEth(key, 50 ether);
+        for (uint256 i; i < 12; ++i) {
+            uint256 r = uint256(keccak256(abi.encode(seed, i)));
+            IGlueHook.Pot memory before = pump.potOf(id);
+            uint256 wait = 1 + (r >> 8) % 40 minutes; // a new block every time: dt > 0
+            vm.warp(block.timestamp + wait);
+            vm.roll(block.number + 1);
+            if (r % 2 == 0) helper.swap(key, true, -int256(1 + (r >> 16) % 80 ether));
+            else {
+                uint256 tok = 1 + (r >> 16) % 80_000e18;
+                uint256 have = token.balanceOf(address(helper));
+                if (tok > have) tok = have;
+                if (tok != 0) helper.swap(key, false, -int256(tok));
+            }
+            IGlueHook.Pot memory after_ = pump.potOf(id);
+            // Main is currency1: dearer main = lower tick, so a RISE for main is refX8 going DOWN
+            int256 riseX8 = int256(before.referenceTickX8) - int256(after_.referenceTickX8);
+            int256 capX8 = int256(uint256(pump.REFERENCE_MAX_RISE_PER_MINUTE()) << 8) * int256(wait) / 60;
+            assertLe(riseX8, capX8 + 1, "the reference never rises faster than the cap");
+            // And never past the tick that stood
+            if (riseX8 > 0) {
+                assertGe(after_.referenceTickX8, int32(before.lastTick) << 8, "never past the standing tick");
+            } else {
+                assertLe(after_.referenceTickX8, int32(before.lastTick) << 8, "a fall never past the standing tick");
+            }
+        }
+    }
+
+    /// FM15 — THE CREDIT, exact. From a drained bucket, a dip of demand `D` in the same block gets a
+    ///        pump of `0.8 · min(feeCap, left + k·f·D)` — the volume credit lands before the pump is
+    ///        sized. The bucket keeps `left` as a FRACTION of the ceiling (the 20% a full pump's
+    ///        haircut leaves), so it is worth `0.2 × the ceiling at the dip's own depth`; a ~3% band
+    ///        covers the depth the dip itself moved.
+    function testFuzz_FM15_creditExact(uint256 sellTok) public {
+        sellTok = bound(sellTok, 10e18, 40_000e18);
+        _donateEth(key, 500 ether);
+        vm.warp(block.timestamp + 1 hours);
+        vm.roll(block.number + 1);
+        // Drain the bucket with a full pump behind a first dip
+        vm.recordLogs();
+        helper.swap(key, false, -int256(2_000e18));
+        ( , uint256 first, ) = _lastPumped(vm.getRecordedLogs());
+        assertApproxEqRel(first, (_feeCap() * HAIRCUT_BPS) / BPS, 0.03e18, "the first dip drained the bucket");
+
+        uint256 ethBefore = address(helper).balance;
+        vm.recordLogs();
+        helper.swap(key, false, -int256(sellTok));
+        ( , uint256 spent, ) = _lastPumped(vm.getRecordedLogs());
+        uint256 demand = address(helper).balance - ethBefore;
+        uint256 feeCapAfter = _feeCap();
+
+        uint256 left = (feeCapAfter * (BPS - HAIRCUT_BPS)) / BPS;
+        uint256 level = left + (pump.PUMP_FEE_LEVERAGE() * FEE * demand) / 1e6;
+        if (level > feeCapAfter) level = feeCapAfter;
+        uint256 expected = (level * HAIRCUT_BPS) / BPS;
+        if ((demand * SHARE_MAX) / 1e18 < level) expected = (((demand * SHARE_MAX) / 1e18) * HAIRCUT_BPS) / BPS;
+        assertApproxEqRel(spent, expected, 0.03e18, "pump = 0.8 x min(feeCap, left + k.f.D, 60% D)");
     }
 }

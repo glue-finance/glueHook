@@ -30,7 +30,7 @@ contract SplitReentrantRecipient {
 /**
  * @title  GlueHookPotSplit — the BUYBACK SPLIT on the pot's output, mechanics and armor.
  * @notice SP1–SP10 pin the waterfall itself: zero-default parity with the unsplit delivery, the
- *         wei-exact three-way carve on both the pump's and the shield's output, the burn-intent
+ *         wei-exact three-way carve on the pump's output behind buys and sells, the burn-intent
  *         merge into one cascade walk, validation and operator gating, the plain-addLiquidity
  *         defaults (owner == operator, split off), the remove-all-liquidity carry cycle, and the
  *         100%-compound and native-main edges. NS1–NS4 are the never-stop matrix for the new legs:
@@ -85,6 +85,7 @@ contract GlueHookPotSplit is GlueHookFixture {
 
     /// @dev Run a buy that carries a pump; return what it bought.
     function _pump(IPoolManagerMin.PoolKey memory key) internal returns (uint256 bought, Vm.Log[] memory logs) {
+        _refill(); // each pump here is meant to be a full one: give the bucket its minute
         vm.recordLogs();
         helper.swap(key, true, -int256(1 ether));
         logs = vm.getRecordedLogs();
@@ -157,25 +158,25 @@ contract GlueHookPotSplit is GlueHookFixture {
         assertEq(main.balanceOf(DEAD), bought - comp, "everything else burned in one walk");
     }
 
-    /// SP4 — THE SHIELD SPLITS TOO: absorbed main runs the identical waterfall — the split is on
-    ///       the pot's OUTPUT, whichever mechanic produced it.
-    function test_SP4_shieldOutputSplits() public {
+    /// SP4 — THE SELL-SIDE PUMP SPLITS TOO: main bought behind a SELL runs the identical waterfall
+    ///       — the split is on the pot's OUTPUT, whichever direction summoned it.
+    function test_SP4_sellSidePumpOutputSplits() public {
         MockERC20 main = new MockERC20("Main", "MAIN", 18);
         (IPoolManagerMin.PoolKey memory key, bytes32 id) =
             _openWithSplit(address(main), rita, uint64(25e16), uint64(25e16));
 
         _mintTo(address(main), address(helper), 1_000e18);
         vm.recordLogs();
-        helper.swap(key, false, -int256(1_000e18)); // a sell the pot absorbs
+        helper.swap(key, false, -int256(1_000e18)); // a sell the pump fires behind
         Vm.Log[] memory logs = vm.getRecordedLogs();
-        ( , uint256 absorbed, ) = _lastShielded(logs);
-        assertGt(absorbed, 0, "the shield absorbed");
+        ( , , uint256 bought) = _lastPumped(logs);
+        assertGt(bought, 0, "the pump fired behind the sell");
 
-        uint256 comp = (absorbed * 25e16) / 1e18;
-        uint256 burnLeg = (absorbed * 25e16) / 1e18;
-        assertEq(pump.programOf(id).carryMain, comp, "compound leg carved off the absorb");
+        uint256 comp = (bought * 25e16) / 1e18;
+        uint256 burnLeg = (bought * 25e16) / 1e18;
+        assertEq(pump.programOf(id).carryMain, comp, "compound leg carved off the buy");
         assertEq(main.balanceOf(DEAD), burnLeg, "burn leg walked the cascade");
-        assertEq(main.balanceOf(rita), absorbed - comp - burnLeg, "the rest delivered");
+        assertEq(main.balanceOf(rita), bought - comp - burnLeg, "the rest delivered");
     }
 
     /// SP5 — NO PROGRAM, NO SPLIT: a pool that never created a program delivers whole. The shares
@@ -388,14 +389,14 @@ contract GlueHookPotSplit is GlueHookFixture {
         assertEq(main.balanceOf(rita), rest, "and was delivered on retry");
     }
 
-    /// NS2 — AN UNBURNABLE MAIN UNDER A BURN SHARE: the token blocks the GlueStick's pull, so the
-    ///       unglue reverts, the leg settles to the held ledger (custody IS the burn), and the swap
-    ///       lands.
+    /// NS2 — AN UNBURNABLE MAIN UNDER A BURN SHARE: the token blocks its own glue's pull, so the
+    ///       wrapper unglue reverts, the leg settles to the held ledger (custody IS the burn), and
+    ///       the swap lands.
     function test_NS2_unburnableBurnLegHolds() public {
         BlockingERC20 main = new BlockingERC20();
-        (IPoolManagerMin.PoolKey memory key, bytes32 id) =
+        (IPoolManagerMin.PoolKey memory key, ) =
             _openWithSplit(address(main), rita, 0, uint64(5e17));
-        main.setBlocked(GLUE_STICK, true); // the glue pull reverts: the unglue can never run
+        main.setBlocked(stick.wrapperOf(address(main)), true); // the glue pull reverts: the unglue can never run
 
         (uint256 bought, ) = _pump(key);
         assertGt(bought, 0, "the swap landed");
@@ -417,8 +418,7 @@ contract GlueHookPotSplit is GlueHookFixture {
 
         // Creation survives the refused ensure, and no glue exists for the main
         (IPoolManagerMin.PoolKey memory key, ) = _openEthPool(address(main), address(0));
-        (bool isSticky, ) = stick.isStickyAsset(address(main));
-        assertFalse(isSticky, "the best-effort ensure was refused");
+        assertEq(stick.wrapperOf(address(main)), address(0), "the best-effort ensure was refused");
         _donateEth(key, 30 ether);
 
         // First pump: the unglue refuses, the whole burn-intent output is held and the flag set
@@ -435,7 +435,7 @@ contract GlueHookPotSplit is GlueHookFixture {
     }
 
     /// NS4 — A RE-ENTERING RECIPIENT: the harvest's native secondary leg lands on a contract that
-    ///       immediately calls back into the hook from inside its bounded 30k-stipend send. The
+    ///       immediately calls back into the hook from inside its full-gas send. The
     ///       transient guard bounces the re-entry, the delivery still succeeds, and the harvest
     ///       settles whole.
     function test_NS4_reentrantRecipientBounces() public {
@@ -471,7 +471,7 @@ contract GlueHookPotSplit is GlueHookFixture {
         uint256 hostileBefore = address(hostile).balance;
         pump.harvest(key);
 
-        // The 30k-stipend send succeeds (the try/catch swallows the guard bounce inside), the
+        // The send succeeds (the try/catch swallows the guard bounce inside), the
         // re-entry itself never lands
         assertGt(address(hostile).balance - hostileBefore, 0, "the ETH leg was delivered");
         assertFalse(hostile.reentered(), "the re-entry bounced off the guard");

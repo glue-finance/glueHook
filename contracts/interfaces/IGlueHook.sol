@@ -26,9 +26,11 @@ import {IPoolManagerMin} from "../libs/GluedV4Core.sol";
  * @title  IGlueHook
  * @author @lalilulel0x - La Li Lu Le Lo
  * @notice Interface of the GlueHook Uniswap V4 buyback-and-burn hook: a permissionless donation POT
- *         per hooked pool that pumps on buys and shields on sells, plus one optional LP PROGRAM per
- *         pool — a hook-held liquidity position whose trading fees are auto-harvested inside swaps
- *         and split, with a selectable AUTO-COMPOUND share re-minted into the position itself.
+ *         per hooked pool that buys the pool's own asset behind every swap — throttled by a
+ *         reference price so it buys dips at full size and rallies only as far as they can be
+ *         proven cheap — plus one optional LP PROGRAM per pool — a hook-held liquidity position
+ *         whose trading fees are auto-harvested inside swaps and split, with a selectable
+ *         AUTO-COMPOUND share re-minted into the position itself.
  * @dev    Every hooked pool declares two roles for its two currencies:
  *
  *         ┌───────────┬─────────────────────────────────────────────────────────────────────────────┐
@@ -42,27 +44,48 @@ import {IPoolManagerMin} from "../libs/GluedV4Core.sol";
  *         Either currency may be main, so the hook is pair-agnostic: an ETH-quoted token is one
  *         configuration among many, not a requirement. The one constraint: MAIN must be GLUEABLE —
  *         never the network token and never the chain's canonical wrapped native (NATIVEWRAP) —
- *         because a BURN is the Glue Protocol's own: a pure `unglue` through the GLUE_STICK
- *         singleton, destroying the supply in-protocol and concentrating the glue's backing for
- *         every remaining holder. The hook never destroys supply itself; a main whose unglue
- *         refuses is held on the hook FOREVER instead (custody IS the burn).
+ *         because a BURN is the Glue Protocol's own: a pure `unglue` (empty collateral list)
+ *         called directly on the main's canonical GlueWrapper, destroying the supply in-protocol
+ *         and concentrating the glue's backing for every remaining holder — or, when the main IS
+ *         a GlueWrapper (the ERC20 face of a glued ERC20 or ERC721 collection), a PARK: the shares
+ *         are transferred to the wrapper's own address, which the Glue supply oracle counts as out
+ *         of circulation. The hook never destroys supply itself; a main whose burn refuses is held
+ *         on the hook FOREVER instead (custody IS the burn).
  *
- *         TWO MECHANICS, ONE POT
+ *         ONE MECHANIC, ONE POT
  *
- *         PUMP (`afterSwap`, on a secondary → main buy). The pot spends secondary to buy more main in
- *         the buyer's own transaction and hands it to the recipient. The spend is capped so the pump's
- *         output can never exceed the carrying buy's output, with a further safety haircut — a dust buy
- *         can only ever unlock a dust pump, which is what makes the pump un-sandwichable.
+ *         THE PUMP (`afterSwap`, on EVERY swap of a funded pool, in either direction). After the
+ *         swapper's trade has executed, the pot spends secondary to buy main in that same
+ *         transaction and hands it to the recipient. Behind a buy it adds to the demand; behind a
+ *         sell it buys the dip the sell just made. The swapper's own execution is never touched:
+ *         the pump runs after it, in its own call frame, and a failure skips the pump alone.
  *
- *         SHIELD (`beforeSwap`, on a main → secondary sell). The pot absorbs the sell at the EXACT price
- *         the pool would have executed it at, fee and tick impact included: the seller is indifferent,
- *         the pool's price does not move, and the absorbed main goes to the recipient instead of the
- *         pool. When the pot cannot cover the whole sell it absorbs the slice it can afford and the
- *         remainder swaps through the pool in the same call.
+ *         FOUR CEILINGS size it, and the pump takes the smallest, then a haircut:
  *
- *         Because the shield never pays above the pool's own price, selling into the pot is never better
- *         than selling into the pool — moving spot first buys an attacker nothing, and every round trip
- *         still pays the pool's fee and impact twice.
+ *           1. THE FEE CEILING `f·R` (fee × tangent depth) — the size below which sandwiching the
+ *              pump costs more in fees than the price move is worth, whatever the attacker's size.
+ *           2. THE SPEND BUCKET — the pot's pace, tied to what the pool EARNS. The bucket holds at
+ *              most one fee ceiling; every funded swap credits it {GlueHook.PUMP_FEE_LEVERAGE} times
+ *              the fee it paid, and time credits it one ceiling per {GlueHook.PUMP_REFILL} as a slow
+ *              floor. Over any window the pot spends at most `k ×` the LP fees earned plus the floor,
+ *              so nobody can compress the pot's spend into a block by manufacturing volume — the
+ *              volume unlocks only `k ×` what it cost in fees.
+ *           3. THE DEMAND CEILING — a SHARE of the secondary the carrying swap moved (paid on a
+ *              buy, received on a sell), so a dust trade unlocks only a dust pump.
+ *           4. THE REFERENCE GATE sets that share: the pool keeps a time-weighted REFERENCE tick
+ *              (fed only by prices that STOOD between blocks — nothing a transaction does to spot
+ *              inside its own block enters it, and moving it means holding a price against the
+ *              market for minutes; and it may RISE at most {GlueHook.REFERENCE_MAX_RISE_PER_MINUTE}
+ *              ticks a minute, so a `+d` push takes `d / 3%` minutes of a held price to be believed,
+ *              while a fall is believed at once). At or below the reference the share is its
+ *              maximum; above it the share shrinks as `fee / premium`, which is exactly the level
+ *              at which pushing spot up to farm the pump — both legs of the round trip summoning
+ *              pumps — costs the pusher more in fees than the pumps can hand back.
+ *
+ *         So the pot buys every dip at full size, buys ordinary trading at full size, follows a
+ *         genuine rally at a size that shrinks with the premium over the reference, paces itself to
+ *         what the pool earns, and cannot be farmed by anyone moving the price inside their own
+ *         transaction or their own block.
  *
  *         THE LP PROGRAM (one per pool, admin-created). The pool's single hook-held liquidity position,
  *         created plain ({addLiquidity}: zero shares, auto-harvest disarmed, everything switchable
@@ -77,12 +100,32 @@ import {IPoolManagerMin} from "../libs/GluedV4Core.sol";
  *         harvest, transfer), the OPERATOR edits the rules; either surrenders to `address(0)` on its
  *         own terms.
  *
- *         THE BUYBACK SPLIT (operator-set, part of {ProgramConfig}). The pot's OUTPUT — main a pump
- *         buys or the shield absorbs — runs the same waterfall shape before delivery:
+ *         THE BUYBACK SPLIT (operator-set, part of {ProgramConfig}). The pot's OUTPUT — the main a
+ *         pump buys — runs the same waterfall shape before delivery:
  *         `potCompoundShareWad` joins the program's main-side compound carry (buy pressure becoming
  *         the pool's own liquidity), `potBurnShareWad` runs the burn cascade, and the EXACT rest
  *         follows the pot's recipient exactly as an unsplit delivery would. Both shares default to
  *         zero — the unsplit behaviour — and a pool with no program always delivers whole.
+ *
+ *         NATIVE PROGRAMS (the Glue staking integration). A program whose creator is a REGISTERED
+ *         Glue LP engine (`GlueStick.isRegisteredEngine(msg.sender)` at creation — {launchPool},
+ *         {addLiquidity}, {addLiquidityAdvanced}) is stamped `native` once and forever. A native
+ *         program's OWNER and BOTH remainder recipients are the creating engine and can never be
+ *         moved (the operator still edits shares and the auto-harvest minimums, so the engine's
+ *         push-config sync keeps working; ownership transfer is refused). On EVERY harvest of a
+ *         native program — the in-swap auto-harvest, the manual {harvest}, and the harvest-first
+ *         inside {addProgramLiquidity} / {removeProgramLiquidity} — AFTER the remainder legs have
+ *         been pushed, the hook (a) advances the per-`(pool, asset)` DELIVERED ledger
+ *         ({deliveredCumOf}: what actually landed on the engine, so a leg booked to `owed` counts
+ *         only when the later successful push folds it in) and (b) calls the engine's
+ *         `IGlueHookedEngine.recordHarvest(poolId, deliveredMain, deliveredSec)` with the carrying
+ *         call's gas forwarded (no stipend — the engine is Glue's own, pinned at pool creation) and
+ *         its revert swallowed. The callback is pure bookkeeping on the engine's side: it
+ *         can never touch delivery, the pot, the compound or the carrying swap, and the engine
+ *         reconciles any callback that failed from the delivered ledger at its next own harvest,
+ *         so every unit is attributed exactly once. The hook hardcodes NO engine: the registry read
+ *         is its only knowledge of Glue beyond the burn (`wrapperOf` / `ensureWrapper` / `unglue`).
+ *         A non-native program takes ZERO new code paths.
  */
 interface IGlueHook {
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -97,13 +140,29 @@ interface IGlueHook {
         address admin;
         // The defended currency (one of the pool's two); bought back and delivered to `recipient`
         address main;
+        // THE SPEND BUCKET (packed with `main`). The bucket holds at most one fee ceiling (`f·R`);
+        // this timestamp encodes its level as the seconds of time-refill it is worth (full at
+        // {GlueHook.PUMP_REFILL}). A swap's volume credit moves it back, a pump's spend moves it
+        // forward, and time refills it linearly. Zero (a fresh pot) reads as a full bucket.
+        uint32 pumpBucketTimestamp;
         // The buyback currency (the pool's other side); the only asset this pot ever holds
         address secondary;
-        // Where bought / absorbed main is delivered. `address(0)` MEANS BURN: a pure Glue unglue
-        // through the GLUE_STICK (falling through to held-forever) runs instead of a plain transfer.
+        // Where bought main is delivered. `address(0)` MEANS BURN: a pure Glue unglue through the
+        // main's own GlueWrapper — a PARK on it when the main is itself a wrapper — (falling
+        // through to held-forever) runs instead of a plain transfer.
         address recipient;
         // True once {initPot} has run; until then the hook is completely passive on this pool
         bool configured;
+        // ── THE REFERENCE PRICE (packed into `recipient`'s slot, so a swap reads it for free) ──
+        // The time-weighted reference tick the pump's gate compares spot against: an exponential
+        // average of the ticks that STOOD between blocks, time constant {GlueHook.REFERENCE_TAU},
+        // in 1/256ths of a tick. Seeded from the live tick at {initPot} and whenever a donation
+        // funds an empty pot; advanced on every swap of a funded pool.
+        int32 referenceTickX8;
+        // The tick that has stood since `lastTimestamp`: the pool's tick after its latest swap
+        int24 lastTick;
+        // When `lastTick` started standing
+        uint32 lastTimestamp;
         // Pot inventory, denominated in `secondary`
         uint256 balance;
     }
@@ -121,8 +180,8 @@ interface IGlueHook {
     ///      │                │ cascade, and the REST goes to `mainRecipient`. Same ≤ 100% rule.    │
     ///      └────────────────┴────────────────────────────────────────────────────────────────────┘
     ///
-    ///      THE BUYBACK SPLIT. The pot's OUTPUT — every unit of main a pump buys or the shield
-    ///      absorbs — runs the same waterfall shape before delivery: `potCompoundShareWad` is
+    ///      THE BUYBACK SPLIT. The pot's OUTPUT — every unit of main a pump buys — runs the same
+    ///      waterfall shape before delivery: `potCompoundShareWad` is
     ///      credited to the program's main-side compound carry (re-minted as the pool's own
     ///      liquidity at the next harvest), `potBurnShareWad` runs the burn cascade, and the EXACT
     ///      REST follows the pot's recipient exactly as an unsplit delivery would (a live address
@@ -152,7 +211,7 @@ interface IGlueHook {
         uint64 burnShareWad;
         // WAD share of the GROSS of BOTH sides budgeted to the compound mint
         uint64 compoundShareWad;
-        // WAD share of the pot's OUTPUT (pump + shield main) credited to the compound carry
+        // WAD share of the pot's OUTPUT (the main every pump buys) credited to the compound carry
         // (+ potBurn ≤ 100%; zero without effect when the pool has no program)
         uint64 potCompoundShareWad;
         // WAD share of the pot's OUTPUT routed through the burn cascade (+ potCompound ≤ 100%)
@@ -179,6 +238,10 @@ interface IGlueHook {
     ///      can go to `address(0)` — at creation or by transfer — to lock the liquidity forever, which
     ///      force-opens the manual harvest. Richer custody policy (vesting, timelocks, DAO control) is
     ///      built ON TOP by making such a contract the owner. The tick range is fixed at creation.
+    ///
+    ///      Slot 0 packs everything the per-swap auto-harvest gate reads (`liquidity`, the ticks,
+    ///      `exists`, `publicHarvest`, `armed`, `native`): a disarmed program costs a swap ONE
+    ///      storage read.
     struct Program {
         // The hook-tracked liquidity of the program's single V4 position
         uint128 liquidity;
@@ -190,22 +253,28 @@ interface IGlueHook {
         bool exists;
         // True opens the manual {harvest} to anyone; false keeps it owner-only
         bool publicHarvest;
-        // WAD share of GROSS secondary-side fees credited to the pool's pot
-        uint64 buybackShareWad;
+        // True when at least one auto-harvest min is set (not `type(uint256).max`): maintained by
+        // the config write, so a disarmed program never pays the pending-fee scan on a swap
+        bool armed;
+        // True when the program was created by a registered Glue LP engine: owner + both remainder
+        // recipients are pinned to that engine and every harvest reports to it (see the header)
+        bool native;
         // The PROPERTY holder: add/remove liquidity + harvest; `address(0)` = liquidity locked forever
         address owner;
-        // WAD share of GROSS main-side fees routed through the burn cascade
-        uint64 burnShareWad;
+        // WAD share of GROSS secondary-side fees credited to the pool's pot
+        uint64 buybackShareWad;
         // Receives the secondary remainder (gross − compound − buyback)
         address secondaryRecipient;
-        // WAD share of the GROSS of BOTH sides budgeted to the compound mint
-        uint64 compoundShareWad;
+        // WAD share of GROSS main-side fees routed through the burn cascade
+        uint64 burnShareWad;
         // Receives the main remainder (gross − compound − burn)
         address mainRecipient;
-        // WAD share of the pot's OUTPUT (pump + shield main) credited to the compound carry
-        uint64 potCompoundShareWad;
+        // WAD share of the GROSS of BOTH sides budgeted to the compound mint
+        uint64 compoundShareWad;
         // The SETTINGS editor: config changes only; `address(0)` = the rules are frozen forever
         address operator;
+        // WAD share of the pot's OUTPUT (the main every pump buys) credited to the compound carry
+        uint64 potCompoundShareWad;
         // WAD share of the pot's OUTPUT routed through the burn cascade
         uint64 potBurnShareWad;
         // Pending main-side fees that arm the auto-harvest (`type(uint256).max` = disarmed)
@@ -232,9 +301,9 @@ interface IGlueHook {
         // poolId => the subset of `parked` (in that pool's main) headed for a LIVE recipient,
         // retryable through {flushDirect}
         mapping(bytes32 => uint256) parkedDirect;
-        // asset => burn-intent main whose Glue unglue refused, held FOREVER
+        // asset => burn-intent main whose Glue burn refused, held FOREVER
         mapping(address => uint256) held;
-        // asset => true once the unglue probe failed; later burn intent settles straight to `held`
+        // asset => true once the burn probe failed; later burn intent settles straight to `held`
         mapping(address => bool) unburnable;
         // recipient => asset => harvest legs a refused push booked, claimable through {claim}
         mapping(address => mapping(address => uint256)) owed;
@@ -242,18 +311,29 @@ interface IGlueHook {
         mapping(address => uint256) owedTotal;
         // asset => Σ compound carry (both sides, every program)
         mapping(address => uint256) carryTotal;
+        // main => its canonical GlueWrapper, read from the GlueStick's registry at declaration (or
+        // lazily at the first burn): `glue[main] == main` means the main IS a wrapper (its burn is a
+        // PARK on itself), any other non-zero value is the wrapper its burn calls `unglue` on, and
+        // zero means the main is not glued yet
+        mapping(address => address) glue;
+        // poolId => asset => cumulative harvest legs DELIVERED to a NATIVE program's engine
+        // (monotonic; an `owed` booking moves it only when the later successful push folds it in).
+        // The engine's exactly-once reconcile cursor — see {deliveredCumOf}.
+        mapping(bytes32 => mapping(address => uint256)) deliveredCum;
     }
 
     /// @notice How a delivery of main was placed.
     enum Delivery {
         // Sent straight to the pot's live recipient
         DIRECT,
-        // Burned through the Glue Protocol: a pure `unglue` (empty collateral list) through the
-        // GLUE_STICK, verified by the hook's own balance drop
+        // Burned through the Glue Protocol: destroyed by a pure `unglue` (empty collateral list)
+        // called on the main's GlueWrapper (`to` = the wrapper), or PARKED on the wrapper itself
+        // when the main is a GlueWrapper (`to` = the main) — both verified by the hook's own
+        // balance drop, both subtracted from Glue's circulating supply
         BURNED,
         // RESERVED (kept for ABI stability): the pre-Glue `0xdead` route, never emitted
         DEAD,
-        // A main whose Glue unglue refused: held on the hook FOREVER, with no
+        // A main whose Glue burn refused: held on the hook FOREVER, with no
         // withdrawal path — out of circulation by custody ({heldOf})
         HELD,
         // A refused live-recipient delivery, parked on the hook and retryable via {flushDirect}
@@ -276,7 +356,7 @@ interface IGlueHook {
     /// @param poolId The pool identifier.
     /// @param main The defended currency.
     /// @param secondary The buyback currency.
-    /// @param recipient Where bought / absorbed main is delivered.
+    /// @param recipient Where bought main is delivered.
     event PotInitialized(bytes32 indexed poolId, address main, address secondary, address recipient);
 
     /// @notice A pot's delivery target moved.
@@ -296,22 +376,16 @@ interface IGlueHook {
     /// @param amount Amount credited (measured, so a fee-on-transfer donation credits what arrived).
     event Donated(bytes32 indexed poolId, address indexed donor, uint256 amount);
 
-    /// @notice The pot bought main inside a buyer's transaction.
+    /// @notice The pot bought main behind a swap (a buy or a sell of main alike).
     /// @param poolId The pool identifier.
     /// @param spent Secondary spent out of the pot.
     /// @param bought Main received.
     event Pumped(bytes32 indexed poolId, uint256 spent, uint256 bought);
 
-    /// @notice The pot absorbed part or all of a sell at the pool's own price.
-    /// @param poolId The pool identifier.
-    /// @param absorbed Main taken out of the sell.
-    /// @param paid Secondary paid to the seller from the pot.
-    event Shielded(bytes32 indexed poolId, uint256 absorbed, uint256 paid);
-
     /// @notice Main left the hook through the delivery/burn cascade.
     /// @param poolId The pool identifier.
-    /// @param to Where it went (the recipient, the GLUE_STICK it was unglued through, or the hook
-    ///        itself when parked or held).
+    /// @param to Where it went (the recipient, the GlueWrapper it was unglued through — the main
+    ///        itself when a wrapper main was parked — or the hook itself when parked or held).
     /// @param amount Amount of main.
     /// @param mode Which leg of the cascade succeeded.
     event Delivered(bytes32 indexed poolId, address indexed to, uint256 amount, Delivery mode);
@@ -389,6 +463,15 @@ interface IGlueHook {
     /// @param amount The amount delivered.
     event Claimed(address indexed to, address indexed asset, uint256 amount);
 
+    /// @notice A native program's harvest was reported to its engine.
+    /// @param poolId The pool identifier.
+    /// @param engine The native program's engine (owner + both recipients).
+    /// @param deliveredMain Main-side remainder that actually landed on the engine this frame.
+    /// @param deliveredSec Secondary-side remainder that actually landed on the engine this frame.
+    /// @param recorded True when `recordHarvest` succeeded; false when the engine reverted or ran
+    ///        out of gas (the engine reconciles from {deliveredCumOf} at its next harvest).
+    event HarvestRecorded(bytes32 indexed poolId, address indexed engine, uint256 deliveredMain, uint256 deliveredSec, bool recorded);
+
     // ═══════════════════════════════════════════════════════════════════════════════
     // ERRORS
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -418,15 +501,18 @@ interface IGlueHook {
 
     /**
      * @notice Declare a hooked pool's roles. One-shot, and only the pool's initialiser may call it.
-     * @dev Until this runs the hook does nothing on the pool: no shield, no pump, and {donate} reverts.
+     * @dev Until this runs the hook does nothing on the pool: no pump, no reference and {donate} reverts.
      *      `main` must be one of the key's two currencies; the other becomes `secondary` automatically.
      *      `main` must be GLUEABLE — never the network token and never NATIVEWRAP (the chain's
      *      canonical wrapped native), because every burn is a pure Glue unglue. The declaration
-     *      also ensures the main's glue exists (GLUE_STICK `ensureWrapper`, best effort: a failure
-     *      never blocks the pool, later burns just settle to the held ledger).
+     *      also classifies the main through the GLUE_STICK's registry (`wrapperOf`): a GlueWrapper
+     *      main burns by PARKING on itself, any other main burns through its canonical wrapper,
+     *      created on the spot when missing (`ensureWrapper`, best effort: a failure never blocks
+     *      the pool, the glue is retried once at the first burn and later burns settle to the held
+     *      ledger).
      * @param key The pool key (must already be initialised through this hook).
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn.
+     * @param recipient Where bought main goes; `address(0)` means burn.
      */
     function initPot(IPoolManagerMin.PoolKey calldata key, address main, address recipient) external;
 
@@ -445,7 +531,7 @@ interface IGlueHook {
      * @param key The pool key (must name this hook).
      * @param sqrtPriceX96 The pool's initial sqrt price, Q64.96.
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn.
+     * @param recipient Where bought main goes; `address(0)` means burn.
      * @param tickLower Lower tick, `(0,0)` = full range.
      * @param tickUpper Upper tick.
      * @param liquidity Liquidity units to mint as the program's seed.
@@ -517,10 +603,12 @@ interface IGlueHook {
     /// @return amount Parked amount, summed across pools.
     function parkedOf(address asset) external view returns (uint256 amount);
 
-    /// @notice Burn-intent main whose Glue unglue refused, held here FOREVER.
+    /// @notice Burn-intent main whose Glue burn refused, held here FOREVER.
     /// @dev The hook's terminal sink: there is no withdrawal path, so custody IS the burn — the amount
     ///      is out of circulation as surely as a `0xdead` balance. Once an asset lands here it is
-    ///      internally flagged unburnable and the unglue is never attempted again.
+    ///      internally flagged unburnable and the wrapper unglue is never attempted again. A
+    ///      GlueWrapper main never lands here through a refusal of its own: its burn is a park on
+    ///      itself, which a wrapper always accepts.
     /// @param asset The main currency.
     /// @return amount Held amount.
     function heldOf(address asset) external view returns (uint256 amount);
@@ -540,28 +628,34 @@ interface IGlueHook {
     function obligationOf(address asset) external view returns (uint256 amount);
 
     /**
-     * @notice Preview what the shield would do to a sell right now.
-     * @dev Mirrors the live `beforeSwap` decision, so a UI or a test can quote the pot's fill without
-     *      executing a swap. Returns zeros when the pot is unconfigured, empty, or the sell is not in the
-     *      shielded direction.
+     * @notice Preview the pump a swap moving this much secondary would trigger right now.
+     * @dev Mirrors the live `afterSwap` sizing at the CURRENT spot and the reference as it would
+     *      stand after this block's observation: the fee ceiling, the spend bucket as it has
+     *      refilled to this block PLUS the volume credit this very demand would earn it, the gated
+     *      share of the demand, the haircut and the pool-exact output floor. Returns zeros for an
+     *      unconfigured or empty pot.
      * @param key The pool key.
-     * @param amountSpecified The swap amount in V4's convention: negative for exact input, positive for
-     *        exact output.
-     * @return absorbed Main the pot would take out of the sell.
-     * @return paid Secondary the pot would pay for it.
-     */
-    function quoteShield(IPoolManagerMin.PoolKey calldata key, int256 amountSpecified)
-        external view returns (uint256 absorbed, uint256 paid);
-
-    /**
-     * @notice Preview the pump a buy of this size would trigger right now.
-     * @param key The pool key.
-     * @param userAmountIn The secondary the carrying buy pays, which is the pump's demand ceiling.
+     * @param demand The secondary the carrying swap moves — paid on a buy of main, received on a
+     *        sell of main — which is what the pump's demand ceiling is a share of.
      * @return spend Secondary the pot would spend.
      * @return minOut The output floor the pump would enforce on itself.
      */
-    function quotePump(IPoolManagerMin.PoolKey calldata key, uint256 userAmountIn)
+    function quotePump(IPoolManagerMin.PoolKey calldata key, uint256 demand)
         external view returns (uint256 spend, uint256 minOut);
+
+    /**
+     * @notice The reference gate as it stands right now: the share of a swap's secondary the pump
+     *         may match, the live tick and the reference tick it is measured against.
+     * @dev The reference is projected to this block (the pending observation applied), exactly
+     *      as a swap in this block would see it. Below or at the reference the share is the
+     *      maximum; above it, `fee / premium` capped at the maximum.
+     * @param poolId The pool identifier.
+     * @return shareWad The demand share (1e18 = 100%).
+     * @return spotTick The pool's live tick.
+     * @return referenceTick The reference tick, floored to a whole tick.
+     */
+    function pumpShareOf(bytes32 poolId)
+        external view returns (uint256 shareWad, int24 spotTick, int24 referenceTick);
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // LP PROGRAM — LIQUIDITY
@@ -728,4 +822,13 @@ interface IGlueHook {
     /// @param asset The asset.
     /// @return amount The claimable backlog.
     function owedOf(address to, address asset) external view returns (uint256 amount);
+
+    /// @notice Cumulative harvest legs DELIVERED to a native program's engine in `asset`.
+    /// @dev Monotonic. The engine attributes from `recordHarvest` and reconciles any failed
+    ///      callback by diffing this against its own cursor — the exactly-once source of truth.
+    ///      Zero for every non-native program.
+    /// @param poolId The pool identifier.
+    /// @param asset The pool currency (`address(0)` = native).
+    /// @return amount The cumulative delivered total.
+    function deliveredCumOf(bytes32 poolId, address asset) external view returns (uint256 amount);
 }

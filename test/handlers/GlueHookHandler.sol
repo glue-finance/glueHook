@@ -11,18 +11,20 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 /**
  * @title  GlueHookHandler — bounded swap-and-donate surface for the pump's stateful fuzzer.
  * @notice Drives the REAL {GlueHook} against the REAL Uniswap V4 PoolManager on a real hooked pool:
- *         donations in random sizes from five actors, buys that trigger the pump, and sells in both
- *         swap modes that trigger the shield, all interleaved in whatever order the fuzzer picks.
+ *         donations in random sizes from five actors, buys and sells in both swap modes — every one
+ *         of which may carry a pump behind it — and time skips that let the reference tick move,
+ *         all interleaved in whatever order the fuzzer picks.
  * @dev    The hook's mechanics are settled inside somebody else's swap, which is exactly the situation
  *         where an accounting slip is invisible to a unit test: the swap succeeds, the swapper is happy,
  *         and the hook's books quietly stop matching its balances. So this handler keeps a ghost ledger
- *         of every wei that entered a pot and every wei a pump or a shield spent out of one, reading the
- *         amounts from the hook's OWN events rather than inferring them from balances — an inferred
- *         number would be measuring the thing it is supposed to be checking.
+ *         of every wei that entered a pot and every wei a pump spent out of one, reading the amounts
+ *         from the hook's OWN events rather than inferring them from balances — an inferred number
+ *         would be measuring the thing it is supposed to be checking.
  *
- *         It also records the two properties that can only be observed at the moment of a fill: that a
- *         FULLY absorbed sell leaves the pool's price untouched, and that a pump never spends more
- *         secondary than the buy that carried it. Both are latched into flags the invariants assert.
+ *         It also records the two properties that can only be observed at the moment of a pump: that
+ *         it never spends more than the gated share (48% after the haircut) of the secondary the
+ *         carrying swap moved, and that a pump behind a SELL never lifts main's price back above where
+ *         the sell started. Both are latched into flags the invariants assert.
  *
  *         Every action swallows its own revert, so the counters below are what prove the surface is live
  *         rather than silently fuzzing an empty world.
@@ -30,6 +32,8 @@ import {MockERC20} from "../mocks/MockERC20.sol";
 contract GlueHookHandler is Test {
     /// @dev Native currency sentinel, matching the hook's own.
     address internal constant ETH = address(0);
+    /// @dev The largest fraction of a swap's secondary a pump may spend: 0.8 × 60%.
+    uint256 internal constant MAX_SPEND_BPS = 4_800;
 
     GlueHook public immutable pump;
     address public immutable poolManager;
@@ -50,14 +54,10 @@ contract GlueHookHandler is Test {
     // ── ghost ledger: the secondary conservation identity's two sides ──
     /// @dev Σ credited into the pot across every donation (measured, from the hook's event).
     uint256 public ghostDonated;
-    /// @dev Σ secondary the shield ever paid a seller.
-    uint256 public ghostShieldPaid;
     /// @dev Σ secondary the pump ever spent.
     uint256 public ghostPumpSpent;
     /// @dev Σ main the pump ever bought.
     uint256 public ghostPumpBought;
-    /// @dev Σ main the shield ever absorbed.
-    uint256 public ghostAbsorbed;
     /// @dev Σ secondary a program harvest ever credited to the pot (the buyback leg of {Harvested}).
     uint256 public ghostFueled;
     /// @dev Σ main a program harvest ever routed through the burn cascade (the burn leg of {Harvested}).
@@ -67,10 +67,10 @@ contract GlueHookHandler is Test {
     uint256 public ghostPotCompounded;
 
     // ── latched violations, asserted by the invariants rather than here ──
-    /// @dev True if a sell the pot absorbed IN FULL still moved the pool's price.
-    bool public fullAbsorbMovedPrice;
-    /// @dev True if a pump ever spent more secondary than the buy it rode on.
-    bool public pumpOutranBuy;
+    /// @dev True if a pump behind a SELL ever lifted main's price back above where the sell started.
+    bool public sellPumpOvershot;
+    /// @dev True if a pump ever spent more than 48% of the secondary the swap it rode on moved.
+    bool public pumpOutranDemand;
     /// @dev True if the pool's LP program liquidity EVER decreased — the handler never removes, so
     ///      with the auto-compound armed the position may only grow or stand still.
     bool public liquidityShrank;
@@ -82,11 +82,11 @@ contract GlueHookHandler is Test {
     uint256 public buys;
     uint256 public sells;
     uint256 public pumps;
-    uint256 public shields;
-    uint256 public fullAbsorbs;
-    uint256 public partialAbsorbs;
+    uint256 public buyPumps;
+    uint256 public sellPumps;
     uint256 public exactOutSells;
     uint256 public harvests;
+    uint256 public skips;
 
     constructor(GlueHook _pump, MockERC20 _token, V4PoolHelper _helper, IPoolManagerMin.PoolKey memory _key) {
         pump = _pump;
@@ -112,7 +112,7 @@ contract GlueHookHandler is Test {
         });
     }
 
-    /// @dev True when the pot's main is currency0, which fixes both mechanics' directions.
+    /// @dev True when the pot's main is currency0, which fixes every direction below.
     function mainIsZero() public view returns (bool) {
         return pump.potOf(poolId).main == c0;
     }
@@ -129,15 +129,16 @@ contract GlueHookHandler is Test {
 
     /**
      * @dev Drain the hook's own events out of a recorded log window and fold them into the ghost ledger.
-     *      `carriedBy` is the secondary the triggering buy supplied, or zero on a sell — the yardstick the
-     *      pump's spend must not exceed.
+     *      `carriedBy` is the secondary the triggering swap moved (paid on a buy, received on a sell) —
+     *      the yardstick the pump's spend must stay inside 48% of. `priceBefore` is non-zero on a
+     *      plain sell, where the pump behind it may not lift main's price past the sell's start.
      *
      *      `landed` is not optional: the recorder keeps logs emitted inside a call that later REVERTED, so
-     *      an action the fuzzer bounced would otherwise book a pump or a fill the chain never kept, and
-     *      every ledger identity below would drift by exactly the amount of the trade that did not happen.
+     *      an action the fuzzer bounced would otherwise book a pump the chain never kept, and every
+     *      ledger identity below would drift by exactly the amount of the trade that did not happen.
      *      The window is drained either way, so a bounced action cannot leak into the next one.
      */
-    function _accountLogs(bool landed, uint256 carriedBy, uint160 priceBefore, uint256 sellSize) private {
+    function _accountLogs(bool landed, uint256 carriedBy, uint160 priceBefore, bool isSell) private {
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         // The monotone-liquidity latch reads live chain state, so it is valid whether or not the
@@ -155,19 +156,14 @@ contract GlueHookHandler is Test {
                 ghostPumpSpent += spent;
                 ghostPumpBought += bought;
                 ++pumps;
-                // The pump must never outrun the demand that triggered it
-                if (spent > carriedBy) pumpOutranBuy = true;
-            } else if (logs[i].topics[0] == keccak256("Shielded(bytes32,uint256,uint256)")) {
-                (uint256 absorbed, uint256 paid) = abi.decode(logs[i].data, (uint256, uint256));
-                ghostAbsorbed += absorbed;
-                ghostShieldPaid += paid;
-                ++shields;
-                if (sellSize != 0 && absorbed == sellSize) {
-                    ++fullAbsorbs;
-                    // The pot took the WHOLE sell, so the pool never traded and cannot have moved
-                    if (sqrtPrice() != priceBefore) fullAbsorbMovedPrice = true;
-                } else if (sellSize != 0) {
-                    ++partialAbsorbs;
+                if (isSell) ++sellPumps; else ++buyPumps;
+                // The pump must never outrun the gated share of the demand that triggered it
+                if (spent > (carriedBy * MAX_SPEND_BPS) / 10_000 + 1) pumpOutranDemand = true;
+                if (priceBefore != 0) {
+                    // A V4 tick prices currency0 in currency1: main dearer = sqrtPrice up when main is
+                    // currency0, down when it is currency1. The pump may not overshoot the sell's start.
+                    uint160 now_ = sqrtPrice();
+                    if (mainIsZero() ? now_ > priceBefore : now_ < priceBefore) sellPumpOvershot = true;
                 }
             } else if (logs[i].topics[0] == keccak256("Donated(bytes32,address,uint256)")) {
                 ghostDonated += abi.decode(logs[i].data, (uint256));
@@ -200,10 +196,10 @@ contract GlueHookHandler is Test {
         vm.recordLogs();
         vm.prank(a);
         try pump.donate{value: amount}(key(), amount) { landed = true; } catch {}
-        _accountLogs(landed, 0, 0, 0);
+        _accountLogs(landed, 0, 0, false);
     }
 
-    /// @notice Buy main, which is what a pump rides on.
+    /// @notice Buy main; a pump may ride behind it, capped by the secondary the buy paid.
     function buy(uint256 amount) public {
         amount = bound(amount, 1e12, 20 ether);
         bool zeroForOne = !mainIsZero();
@@ -214,23 +210,29 @@ contract GlueHookHandler is Test {
         vm.recordLogs();
         try helper.swap(key(), zeroForOne, -int256(amount)) { landed = true; ++buys; } catch {}
         // Buying main pays secondary, so the buy's own size IS the yardstick for the pump's spend
-        _accountLogs(landed, amount, 0, 0);
+        _accountLogs(landed, amount, 0, false);
     }
 
-    /// @notice Sell main, which is what the shield absorbs.
+    /// @notice Sell main; a pump may ride behind it, capped by the secondary the seller received.
     function sell(uint256 amount) public {
         amount = bound(amount, 1e12, 60_000e18);
         bool zeroForOne = mainIsZero();
         if (_helperBalance(zeroForOne ? c0 : c1) < amount) return;
 
         bool landed;
+        uint256 received;
         uint160 before = sqrtPrice();
         vm.recordLogs();
-        try helper.swap(key(), zeroForOne, -int256(amount)) { landed = true; ++sells; } catch {}
-        _accountLogs(landed, 0, before, amount);
+        try helper.swap(key(), zeroForOne, -int256(amount)) returns (int256 d0, int256 d1) {
+            landed = true;
+            ++sells;
+            int256 sec = zeroForOne ? d1 : d0;
+            received = sec > 0 ? uint256(sec) : 0;
+        } catch {}
+        _accountLogs(landed, received, before, true);
     }
 
-    /// @notice Sell main in EXACT-OUTPUT mode, the shield's inverted branch.
+    /// @notice Sell main in EXACT-OUTPUT mode: the demand is the exact secondary asked for.
     function sellExactOut(uint256 amount) public {
         amount = bound(amount, 1e9, 20 ether);
         bool zeroForOne = mainIsZero();
@@ -238,13 +240,21 @@ contract GlueHookHandler is Test {
         if (_helperBalance(zeroForOne ? c0 : c1) == 0) return;
 
         bool landed;
+        uint160 before = sqrtPrice();
         vm.recordLogs();
         try helper.swap(key(), zeroForOne, int256(amount)) {
             landed = true;
             ++exactOutSells;
         } catch {}
-        // Size is not pinned on this branch, so no full-absorb price claim is made
-        _accountLogs(landed, 0, 0, 0);
+        _accountLogs(landed, amount, before, true);
+    }
+
+    /// @notice Let time pass, so the reference tick moves toward whatever price has been standing.
+    function passTime(uint256 secs) public {
+        secs = bound(secs, 1, 30 minutes);
+        vm.warp(block.timestamp + secs);
+        vm.roll(block.number + 1);
+        ++skips;
     }
 
     /// @dev The helper's spendable balance in a currency.

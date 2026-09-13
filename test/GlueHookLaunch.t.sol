@@ -241,8 +241,8 @@ contract GlueHookLaunch is GlueHookFixture {
         pump.initPot(key, address(token), address(0));
     }
 
-    /// @dev LA9 -- a launched pool is a fully working machine: the pot takes donations, the shield
-    ///      absorbs a sell, and the owner's manual harvest splits real fees.
+    /// @dev LA9 -- a launched pool is a fully working machine: the pot takes donations, the pump
+    ///      fires behind a buy and behind a sell, and the owner's manual harvest splits real fees.
     function test_LA9_launchedPoolFullyOperational() public {
         IPoolManagerMin.PoolKey memory key = _ethKey();
         bytes32 id = keccak256(abi.encode(key));
@@ -257,13 +257,17 @@ contract GlueHookLaunch is GlueHookFixture {
         pump.donate{value: 5 ether}(key, 5 ether);
         assertEq(pump.potOf(id).balance, 5 ether, "pot funded");
 
-        // Trades run and the shield fires on the sell
+        // Trades run and the pump fires behind each of them
         token.mint(address(helper), 20_000_000e18);
         vm.recordLogs();
         helper.swap(key, true, -int256(3 ether));
+        (bool pumpedOnBuy, , ) = _lastPumped(vm.getRecordedLogs());
+        assertTrue(pumpedOnBuy, "pump fired behind the buy");
+        _refill();
+        vm.recordLogs();
         helper.swap(key, false, -int256(2_000e18));
-        (bool shielded, , ) = _lastShieldedFound();
-        assertTrue(shielded, "shield fired");
+        (bool pumpedOnSell, , ) = _lastPumped(vm.getRecordedLogs());
+        assertTrue(pumpedOnSell, "pump fired behind the sell");
 
         // The owner's manual harvest splits real fees
         vm.prank(alice);
@@ -301,10 +305,5 @@ contract GlueHookLaunch is GlueHookFixture {
         helper.swap(key, false, -int256(2_000e18));
         vm.prank(bob);
         pump.harvest(key);
-    }
-
-    /// @dev Wrapper around the fixture's log scanner (records were started by the caller).
-    function _lastShieldedFound() internal returns (bool found, uint256 absorbed, uint256 paid) {
-        return _lastShielded(vm.getRecordedLogs());
     }
 }

@@ -11,22 +11,23 @@ import {GlueHookHandler} from "./handlers/GlueHookHandler.sol";
 
 /**
  * @title  GlueHookInvariant — stateful fuzzing of the buyback hook against a REAL Uniswap V4 pool.
- * @notice The hook's two mechanics both settle inside somebody else's swap, and both move value that
- *         belongs to donors. That combination is what makes a stateful campaign worth running: a unit
- *         test sees a successful swap and a happy swapper, and cannot see that the hook's books stopped
- *         matching its balances three fills ago. So this campaign interleaves donations, buys and sells
- *         (exact-input and exact-output) in arbitrary order and asserts:
+ * @notice The pump settles inside somebody else's swap, and it moves value that belongs to donors.
+ *         That combination is what makes a stateful campaign worth running: a unit test sees a
+ *         successful swap and a happy swapper, and cannot see that the hook's books stopped matching
+ *         its balances three pumps ago. So this campaign interleaves donations, buys, sells
+ *         (exact-input and exact-output) and time skips in arbitrary order and asserts:
  *
  *   PP1 POT SOLVENCY        the hook's balance of the secondary covers everything it says it owes
- *   PP2 CONSERVATION        pot + Σ shield payouts + Σ pump spends == Σ donations, exactly. Every wei
- *                           that ever entered a pot is either still there or was spent by a mechanic
- *                           that logged it — the hook cannot lose or invent secondary.
- *   PP3 PRICE UNTOUCHED     a sell the pot absorbed IN FULL left the pool's price bit-identical. This is
- *                           the shield's whole purpose: supply that never reaches the pool
- *   PP4 PUMP BOUNDED        no pump ever spent more secondary than the buy that carried it, so the pot
- *                           can never be drained faster than real demand arrives
+ *   PP2 CONSERVATION        pot + Σ pump spends == Σ donations, exactly. Every wei that ever entered a
+ *                           pot is either still there or was spent by a pump that logged it — the
+ *                           hook cannot lose or invent secondary.
+ *   PP3 NO OVERSHOOT        a pump behind a SELL never lifts main's price back above where the sell
+ *                           started: it buys the dip, it never manufactures a rally
+ *   PP4 PUMP BOUNDED        no pump ever spent more than 48% of the secondary the swap that carried it
+ *                           moved (the haircut on the gate's full share), so the pot can never be
+ *                           drained faster than real flow arrives
  *   PP5 MAIN ATTRIBUTED     every unit of main the hook holds is parked and accounted for; nothing the
- *                           two mechanics acquired is sitting on the hook unowned
+ *                           pump acquired is sitting on the hook unowned
  *   PP6 DELIVERY IDENTITY   Σ main acquired == Σ main delivered: burned, dead-sent, held, or parked
  *
  * Plus a deterministic anti-vacuity walk, since the handler swallows reverts and every invariant above
@@ -34,16 +35,16 @@ import {GlueHookHandler} from "./handlers/GlueHookHandler.sol";
  *
  * @dev The real PoolManager is etched from the same Sepolia runtime bytecode the Hardhat fixture injects,
  *      so both layers fuzz the identical venue. The hook itself is deployed to an address carrying the
- *      four permission bits the PoolManager reads out of a hook's address, which is what a real
+ *      two permission bits the PoolManager reads out of a hook's address, which is what a real
  *      deployment mines a CREATE2 salt for.
  */
 contract GlueHookInvariant is StdInvariant, Test {
     /// @dev The Sepolia PoolManager slot the Hardhat fixture also uses.
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    /// @dev An address carrying EXACTLY `beforeInitialize | beforeSwap | afterSwap | beforeSwapReturnsDelta`.
-    address constant HOOK_ADDR = 0x91110000000000000000000000000000000020c8;
+    /// @dev An address carrying EXACTLY `beforeInitialize | afterSwap`.
+    address constant HOOK_ADDR = 0x9111000000000000000000000000000000002040;
     /// @dev The REAL canonical GlueStick address (the hook's compile-time constant).
-    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
     /// @dev The chain's canonical wrapped native, as the hook's constructor arg.
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant ETH = address(0);
@@ -98,11 +99,12 @@ contract GlueHookInvariant is StdInvariant, Test {
 
         handler = new GlueHookHandler(pump, token, helper, key);
 
-        bytes4[] memory sel = new bytes4[](4);
+        bytes4[] memory sel = new bytes4[](5);
         sel[0] = GlueHookHandler.donate.selector;
         sel[1] = GlueHookHandler.buy.selector;
         sel[2] = GlueHookHandler.sell.selector;
         sel[3] = GlueHookHandler.sellExactOut.selector;
+        sel[4] = GlueHookHandler.passTime.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: sel}));
         targetContract(address(handler));
     }
@@ -147,28 +149,28 @@ contract GlueHookInvariant is StdInvariant, Test {
         assertGe(handler.secondaryHeld(), handler.secondaryOwed(), "PP1: the hook owes more than it holds");
     }
 
-    // PP2 — the secondary ledger closes exactly. Both mechanics debit the pot before they move anything,
-    // so a fill that failed halfway would show up here as a shortfall or a surplus. The pot's only
+    // PP2 — the secondary ledger closes exactly. The pump debits the pot before it moves anything, so
+    // a swap that failed halfway would show up here as a shortfall or a surplus. The pot's only
     // inflows are donations and harvest fuel (zero in this program-less campaign; the program-armed
     // campaign asserts the same identity with real fuel).
     function invariant_PP2_conservation() public view {
         assertEq(
-            handler.potBalance() + handler.ghostShieldPaid() + handler.ghostPumpSpent(),
+            handler.potBalance() + handler.ghostPumpSpent(),
             handler.ghostDonated() + handler.ghostFueled(),
-            "PP2: pot + payouts + pump spends != donations + harvest fuel"
+            "PP2: pot + pump spends != donations + harvest fuel"
         );
     }
 
-    // PP3 — the shield's reason to exist: supply it absorbs in full never touches the pool, so the price
-    // cannot move. A violation would mean part of an "absorbed" sell reached the pool anyway.
-    function invariant_PP3_priceUntouchedOnFullAbsorb() public view {
-        assertFalse(handler.fullAbsorbMovedPrice(), "PP3: a fully absorbed sell still moved the price");
+    // PP3 — the sell-side pump buys the dip and nothing more: spending under half of what the seller
+    // received, it can never lift main's price back past where the sell started.
+    function invariant_PP3_sellPumpNeverOvershoots() public view {
+        assertFalse(handler.sellPumpOvershot(), "PP3: a pump behind a sell lifted the price past the sell's start");
     }
 
-    // PP4 — the pump is demand-following by construction. Spending more than the buy that triggered it
-    // is the shape every pot-draining attack has to take.
-    function invariant_PP4_pumpBoundedByItsBuy() public view {
-        assertFalse(handler.pumpOutranBuy(), "PP4: a pump spent more than the buy that carried it");
+    // PP4 — the pump is flow-following by construction. Spending more than the gated share of the swap
+    // that triggered it is the shape every pot-draining attack has to take.
+    function invariant_PP4_pumpBoundedByItsSwap() public view {
+        assertFalse(handler.pumpOutranDemand(), "PP4: a pump spent more than 48% of the swap that carried it");
     }
 
     // PP5 — main is never held loose. Whatever the cascade could not deliver is parked, and parked is
@@ -181,10 +183,10 @@ contract GlueHookInvariant is StdInvariant, Test {
         );
     }
 
-    // PP6 — delivery identity: every unit of main the two mechanics acquired left through the cascade,
-    // to the burn address, or sits attributed on the hook (held or parked). None of it evaporates.
+    // PP6 — delivery identity: every unit of main the pump acquired left through the cascade, to the
+    // burn address, or sits attributed on the hook (held or parked). None of it evaporates.
     function invariant_PP6_deliveryIdentity() public view {
-        uint256 acquired = handler.ghostPumpBought() + handler.ghostAbsorbed();
+        uint256 acquired = handler.ghostPumpBought();
         uint256 delivered = token.balanceOf(0x000000000000000000000000000000000000dEaD)
             + pump.parkedOf(address(token)) + pump.heldOf(address(token));
         assertEq(delivered, acquired, "PP6: acquired main != delivered main");
@@ -193,7 +195,7 @@ contract GlueHookInvariant is StdInvariant, Test {
     // ── ANTI-VACUITY ────────────────────────────────────────────────────────────────────────────
 
     /// @notice Drive every action once and prove each landed, so the invariants above are asserted over a
-    ///         world that contains real donations, real pumps and real shield fills.
+    ///         world that contains real donations and real pumps behind buys and sells alike.
     function test_coverage_handlerActionsLand() public {
         handler.donate(0, 40 ether);
         assertEq(handler.donations(), 1, "the donation landed");
@@ -201,48 +203,50 @@ contract GlueHookInvariant is StdInvariant, Test {
 
         handler.buy(3 ether);
         assertEq(handler.buys(), 1, "the buy landed");
-        assertGt(handler.pumps(), 0, "and it pumped");
+        assertGt(handler.buyPumps(), 0, "and it pumped");
         assertGt(handler.ghostPumpBought(), 0, "which bought main");
 
         handler.sell(2_000e18);
         assertEq(handler.sells(), 1, "the sell landed");
-        assertGt(handler.shields(), 0, "and it shielded");
-        assertGt(handler.fullAbsorbs(), 0, "the pot took the whole sell");
+        assertGt(handler.sellPumps(), 0, "and a pump fired behind it");
 
         handler.sellExactOut(1 ether);
         assertGt(handler.exactOutSells(), 0, "the exact-output branch landed");
+        assertGt(handler.sellPumps(), 1, "with a pump behind it too");
 
-        // The two mechanics have now both moved value, and every ledger still closes
-        assertGt(handler.ghostShieldPaid(), 0, "the shield paid a seller");
+        handler.passTime(5 minutes);
+        assertEq(handler.skips(), 1, "time moved");
+
+        // The pump has moved value both ways, and every ledger still closes
         assertGt(handler.ghostPumpSpent(), 0, "the pump spent from the pot");
         invariant_PP1_potSolvency();
         invariant_PP2_conservation();
-        invariant_PP3_priceUntouchedOnFullAbsorb();
-        invariant_PP4_pumpBoundedByItsBuy();
+        invariant_PP3_sellPumpNeverOvershoots();
+        invariant_PP4_pumpBoundedByItsSwap();
         invariant_PP5_mainAttributed();
         invariant_PP6_deliveryIdentity();
     }
 
-    /// @notice A pot far smaller than the sell it faces must absorb what it can afford, hand the rest to
-    ///         the pool, and end EMPTY — never overdrawn, never stuck holding an unspendable remainder.
-    ///         Walk it explicitly rather than hoping the fuzzer lands on the boundary.
-    function test_coverage_thinPotAbsorbsPartiallyAndEmpties() public {
+    /// @notice A pot far smaller than the pump it could carry spends 80% of itself (the haircut on a
+    ///         pot-bound spend) — never overdrawn, never all of it in one pass. Walk it explicitly
+    ///         rather than hoping the fuzzer lands on the boundary.
+    function test_coverage_thinPotSpendsItsHaircutShare() public {
         handler.donate(1, 0.05 ether);
         uint256 funded = handler.potBalance();
         assertGt(funded, 0, "the pot is funded");
 
         handler.sell(60_000e18);
-        assertGt(handler.shields(), 0, "the thin pot still filled what it could");
-        assertEq(handler.potBalance(), 0, "and spent itself to the wei");
-        assertEq(handler.ghostShieldPaid(), funded, "paying out exactly what it held");
-        assertGt(handler.partialAbsorbs(), 0, "the pool took the remainder");
+        assertGt(handler.sellPumps(), 0, "the thin pot still fired");
+        assertEq(handler.ghostPumpSpent(), (funded * 8) / 10, "spending 80% of what it held");
+        assertEq(handler.potBalance(), funded - (funded * 8) / 10, "and keeping the haircut's remainder");
         invariant_PP1_potSolvency();
         invariant_PP2_conservation();
+        invariant_PP3_sellPumpNeverOvershoots();
         invariant_PP6_deliveryIdentity();
     }
 
-    /// @notice An UNFUNDED pot must be completely invisible: both mechanics stand aside and the pool
-    ///         behaves as though the hook were not there. This is the passthrough guarantee every pool
+    /// @notice An UNFUNDED pot must be completely invisible: the pump stands aside and the pool behaves
+    ///         as though the hook were not there. This is the passthrough guarantee every pool
     ///         adopting the hook relies on before anybody has donated.
     function test_coverage_emptyPotIsInvisible() public {
         assertEq(handler.potBalance(), 0, "starting empty");
@@ -252,7 +256,6 @@ contract GlueHookInvariant is StdInvariant, Test {
         handler.sell(1_000e18);
 
         assertEq(handler.pumps(), 0, "no pump without a pot");
-        assertEq(handler.shields(), 0, "no shield without a pot");
         assertTrue(handler.sqrtPrice() != before, "and both swaps went through the pool");
         assertEq(token.balanceOf(0x000000000000000000000000000000000000dEaD), 0, "nothing was burned");
     }

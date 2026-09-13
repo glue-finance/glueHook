@@ -28,7 +28,9 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
  * @title  GlueHook - Uniswap V4 buyback-and-burn hook with auto-compounding LP fee programs
  * @author @lalilulel0x - La Li Lu Le Lo
  * @notice One hook singleton hosting a permissionless donation POT for every pool that adopts it: the
- *         pot pumps on buys and shields on sells, and everything it buys is delivered to the pot's
+ *         pot buys the pool's own asset behind every swap — buys and sells alike, sized by a
+ *         reference-price gate that lets it buy dips at full size and rallies only as far as
+ *         farming it would cost more than it pays — and everything it buys is delivered to the pot's
  *         recipient — `address(0)` means BURN, so the default configuration is buy-and-burn. Each pool
  *         may additionally run one LP PROGRAM: a hook-held liquidity position whose trading fees are
  *         auto-harvested inside swaps and split off the GROSS of each side — a COMPOUND share re-minted
@@ -41,53 +43,76 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
  *         native, so the hook is pair-agnostic — a token quoted in ETH is one configuration, not a rule.
  *
  *         ┌──────────────────────────────────────────────────────────────────────────────────────────┐
- *         │  PUMP — afterSwap, on a SECONDARY → MAIN buy                                             │
+ *         │  THE PUMP — afterSwap, behind EVERY swap of a funded pool, in either direction           │
  *         │                                                                                          │
- *         │  The pot buys main in the buyer's own transaction and delivers it. The spend is capped at│
- *         │  `fee·depth` — the size below which sandwiching the pump costs more in fees than the     │
- *         │  price move is worth, whatever the attacker's own size — and at the secondary the buy    │
- *         │  itself just paid, so a dust buy unlocks only a dust pump. The swap runs in a self-call, │
- *         │  so a pool state that would make the pump revert skips the pump instead of breaking the  │
- *         │  buyer's swap.                                                                           │
- *         ├──────────────────────────────────────────────────────────────────────────────────────────┤
- *         │  SHIELD — beforeSwap, on a MAIN → SECONDARY sell                                         │
+ *         │  Once the swapper's trade has executed, the pot buys main in that same transaction and   │
+ *         │  delivers it. Behind a buy it adds to the demand; behind a sell it buys the dip the sell │
+ *         │  just made. The swap runs in a self-call, so a pool state that would make the pump      │
+ *         │  revert skips the pump instead of breaking the carrying swap, and the swapper's own      │
+ *         │  execution — output, price limit, router minimum — is never touched.                     │
  *         │                                                                                          │
- *         │  The pot absorbs the sell at the EXACT price the pool would have executed it at — LP fee │
- *         │  and tick impact included, computed with {GluedV4Core.computeSwapStep}, the pool's own   │
- *         │  arithmetic. The seller is therefore indifferent between the pot and the pool, the pool's│
- *         │  price does not move, and the absorbed main is delivered instead of hitting the pool.    │
- *         │  A pot that cannot cover the whole sell absorbs the slice it can afford and the remainder│
- *         │  swaps through the pool in the same call.                                                │
+ *         │  Its size is the SMALLEST of four ceilings, then an 80% haircut:                         │
+ *         │    · the FEE CEILING     `f·R`   — fee × tangent depth, the un-sandwichable size         │
+ *         │    · the SPEND BUCKET            — at most one fee ceiling, refilled `k×` the fee every  │
+ *         │                                    swap pays plus a slow time floor: the pot's pace is   │
+ *         │                                    paced to what the pool EARNS                          │
+ *         │    · the DEMAND CEILING  `s·B`   — a share of the secondary the swap moved (paid on a    │
+ *         │                                    buy, received on a sell)                              │
+ *         │    · the REFERENCE GATE  `s(d)`  — the share itself: 60% at or below the pool's          │
+ *         │                                    time-weighted reference tick, `f/d` above it, where   │
+ *         │                                    `d` is main's premium over the reference              │
  *         └──────────────────────────────────────────────────────────────────────────────────────────┘
  *
- *         WHY THE SHIELD CANNOT BE PLAYED. Pricing the fill at the pool's own execution price is the
- *         whole security model. An internal fill priced at spot (no fee, no impact) would be strictly
- *         better than the pool, so an attacker could move spot inside their own transaction and drain
- *         the pot at an artificial price; pricing at pool execution removes the edge entirely, with no
- *         oracle and no TWAP. Three further guards come with it:
- *
- *           1. Zero-rounding — if either leg of the fill rounds to zero the fill is skipped, because a
- *              one-sided settlement is not something the hook can balance.
- *           2. Direction pinning — the fill is bounded by the next initialized tick in the direction of
- *              travel, never by the swapper's own `sqrtPriceLimitX96`, so a supplied limit can never
- *              flip the inferred direction and swap the roles of the two legs.
- *           3. Reserve bound — the fill is skipped unless the PoolManager actually holds the main being
- *              taken, so a pot far larger than its pool can never brick that pool's swaps.
- *
- *         The swapper's own `sqrtPriceLimitX96` and their router's minimum-output check still apply to
- *         the total, so the shield can only ever add to what a sell receives, never subtract.
- *
- *         WHY THE PUMP CANNOT BE PLAYED. A pump is a market buy that somebody else's transaction
+ *         WHY THE PUMP CANNOT BE SANDWICHED. A pump is a market buy that somebody else's transaction
  *         triggers, which is the exact shape of a sandwich victim: buy in front of it, let it lift the
  *         price, sell behind it. That attack earns `2·X·V/R` and costs `2·f·X` in fees (`X` the
  *         attacker's size, `V` the pump's spend, `R` the pool's depth, `f` its fee), so the attacker's
  *         own size cancels and the attack pays if and only if `V > f·R`. The pump therefore refuses to
  *         spend more than `f·R` in a single pass, which closes the attack for every attacker size, pot
- *         depth and price at once. A second, softer cap keeps the spend inside the secondary the carrying
- *         buy actually paid, so the pot tracks real demand rather than arriving all at once. See
- *         {_pumpSize}.
+ *         depth and price at once.
  *
- *         DELIVERY & THE BUYBACK SPLIT. A pot names a recipient for the main it buys and absorbs;
+ *         WHY THE PUMP CANNOT BE FARMED. The demand ceiling is what lets a trader summon a pump by
+ *         trading — and a trader who first pushes spot up by a premium `d` and then trades is
+ *         summoning a pump at an inflated price, which they can sell into. Pushing costs them `2·f`
+ *         per unit pushed (in and out) and the pump hands back at most `d` per unit of pump; BOTH
+ *         legs of their round trip summon pumps at the premium (the push and the dump), so with the
+ *         pump's spend a share `s` of each leg the round trip pays if and only if `2·s·d > 2·f`.
+ *         The gate therefore sets `s(d) = min(60%, f/d)`, which puts EVERY such round trip at or
+ *         below break-even before the haircut — and the haircut, the impact of their own unwind and
+ *         the fee on the trade itself are all further losses on top. At or below the reference there
+ *         is no premium to sell into, so the share is the full 60%: dips, ordinary trading and
+ *         choppy markets are bought at full size; a genuine rally is bought at a size that shrinks
+ *         with its premium and grows back as the reference catches up.
+ *
+ *         WHY THE PUMP CANNOT BE RUSHED. The gate has nothing to say at or below the reference —
+ *         and a holder of a large bag who manufactures volume there (cheap round trips, each one
+ *         summoning a pump) is compressing the pot's whole future spend into a moment they alone
+ *         are positioned for. The SPEND BUCKET closes the rush by pacing the pot to what the pool
+ *         EARNS: it holds at most one fee ceiling, every funded swap credits it {PUMP_FEE_LEVERAGE}
+ *         times the fee that swap paid, and time credits it one ceiling per {PUMP_REFILL} as a slow
+ *         floor. Over any window the pot spends at most `k ×` the LP fees earned plus the floor —
+ *         a hot market is bought hard, a dead one barely, and manufactured volume unlocks only `k ×`
+ *         what it cost in fees, so farming the pot needs a bag above `depth / 2k` of the pool, held
+ *         the whole time, at the market's mercy and lifted no more than every other holder.
+ *
+ *         WHY A HELD PRICE IS SLOW TO BELIEVE. The reference may FALL freely — a dip reopens the
+ *         gate at once — but may RISE at most {REFERENCE_MAX_RISE_PER_MINUTE} ticks (≈3%) a minute.
+ *         Reopening the gate after a `+d` push therefore takes `d / 3%` minutes of a price held
+ *         against the whole market, however the time constant is set; an attacker who controls
+ *         consecutive blocks pays in blocks proportional to the move they want the pot to believe.
+ *
+ *         THE REFERENCE. Each funded pool's pot carries a time-weighted average of the pool's tick
+ *         ({REFERENCE_TAU}, ten minutes: an observation `dt` after the last moves it `min(1, dt/τ)`
+ *         of the way to the tick that stood in between), fed only by ticks that STOOD across a
+ *         block boundary: an observation weights the tick left by the PREVIOUS swap by the time it
+ *         stood, and a swap in the same block as the last one adds nothing. Nothing a transaction
+ *         does to spot inside its own block therefore enters the reference — moving it means
+ *         holding a price against the whole market for minutes, exposed to arbitrage the whole
+ *         time. It is seeded from the live tick at {initPot} and whenever a donation funds an empty
+ *         pot, advanced behind every swap of a funded pool, stored in the pot's own slot (so a swap
+ *         reads it for free) and computed in bounded integer arithmetic that cannot revert.
+ *
+ *         DELIVERY & THE BUYBACK SPLIT. A pot names a recipient for the main it buys;
  *         `address(0)` means BURN. When the pool carries an LP PROGRAM, the pot's output first runs
  *         the BUYBACK SPLIT (operator-set in the program config, both shares zero by default):
  *         `potCompoundShareWad` joins the program's main-side compound carry — buy pressure becoming
@@ -96,19 +121,27 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
  *         live recipient is delivered to directly (a plain transfer that never reverts the swap)
  *         and a refusal parks the main here, retryable any time through {flushDirect}. A pot's MAIN
  *         must be GLUEABLE — never the network token and never {NATIVEWRAP} ({initPot} rejects
- *         both) — because a BURN is the Glue Protocol's own: a pure `unglue` through the
- *         {GLUE_STICK} singleton (an empty collateral list redeems nothing — the supply is
- *         destroyed and the glue's backing concentrates for every remaining holder), verified by
- *         the hook's own balance drop and NEVER able to revert the carrying swap. A main whose
- *         unglue refuses is flagged {unburnable} and every burn of it settles to the held ledger:
- *         the amount is HELD on the hook FOREVER, no withdrawal path exists, so custody IS the
- *         burn.
+ *         both) — because a BURN is the Glue Protocol's own, in the shape the main's
+ *         CLASSIFICATION dictates (read once at declaration from the {GLUE_STICK}'s registry):
+ *         a glued main burns through its own GlueWrapper's pure `unglue` (an exact allowance, an
+ *         empty collateral list that redeems nothing — the supply is destroyed and the glue's
+ *         backing concentrates for every remaining holder); a main that IS a GlueWrapper (the
+ *         ERC20 face of a wrapped ERC20 or ERC721 collection, which no unglue can burn) is PARKED
+ *         — transferred to the wrapper's own address, the one custody Glue's supply oracle
+ *         subtracts from circulation. Either is verified by the hook's own balance drop and NEVER
+ *         able to revert the carrying swap. A main the Stick refused at declaration is glued
+ *         lazily at its first burn; one whose burn refuses is flagged {unburnable} and every burn
+ *         of it settles to the held ledger: the amount is HELD on the hook FOREVER, no withdrawal
+ *         path exists, so custody IS the burn.
  *
  *         LP PROGRAM & AUTO-COMPOUNDING. The pot admin may create the pool's single hook-held liquidity
  *         position ({addLiquidity} plain, {addLiquidityAdvanced} with full rules at creation). Its fees
  *         are harvested automatically inside `afterSwap` once they reach the configured minimums (a
- *         try/catch self-call — a heavy harvest never reverts the carrying swap) or manually through
- *         {harvest}. Every share is a fraction of the GROSS fees of its side (`compound + buyback` and
+ *         try/catch self-call — a heavy harvest never reverts the carrying swap; a program with both
+ *         minimums disarmed costs a swap ONE storage read and never scans) or manually through
+ *         {harvest}. The collect and the compound mint are ONE `modifyLiquidity`: the fees pay the
+ *         mint in the PoolManager's own netting, verified against its `feesAccrued`, with the
+ *         collect-only path as the fallback. Every share is a fraction of the GROSS fees of its side (`compound + buyback` and
  *         `compound + burn` each capped at 100% at set-time): the buyback share fuels the pot, the burn
  *         share runs the cascade, and the exact remainder of each side goes to its one recipient. The
  *         COMPOUND budget — `compoundShareWad` of both sides PLUS whatever earlier mints could not
@@ -135,34 +168,59 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     /// @dev Native currency sentinel — V4 keys the network token as `address(0)`.
     address private constant ETH_ADDRESS = address(0);
 
-    /// @notice The permission bits a GlueHook address must carry: `beforeInitialize`, `beforeSwap`,
-    ///         `afterSwap` and the `beforeSwap` delta return.
+    /// @notice The permission bits a GlueHook address must carry: `beforeInitialize` and `afterSwap`
+    ///         (0x2040).
     /// @dev The PoolManager reads a hook's permissions from the low 14 bits of its address, so the hook
     ///      must be CREATE2-mined to an address whose low bits equal EXACTLY this value.
     uint160 public constant REQUIRED_HOOK_FLAGS = GluedV4Core.BEFORE_INITIALIZE_FLAG
-        | GluedV4Core.BEFORE_SWAP_FLAG
-        | GluedV4Core.AFTER_SWAP_FLAG
-        | GluedV4Core.BEFORE_SWAP_RETURNS_DELTA_FLAG;
+        | GluedV4Core.AFTER_SWAP_FLAG;
+
+    /// @notice The time constant of the reference tick: an observation `dt` seconds after the last
+    ///         moves the reference `min(1, dt / REFERENCE_TAU)` of the way to the tick that stood
+    ///         in between. Moving the reference by a premium therefore means holding that premium
+    ///         against the market for minutes, not for a transaction.
+    uint32 public constant REFERENCE_TAU = 10 minutes;
+    /// @notice The most the reference may RISE — main getting dearer — per minute, in ticks
+    ///         (296 ticks ≈ 3%). A fall is never capped: a dip reopens the gate at once. Reopening
+    ///         the gate after a `+d` push therefore takes `d / 3%` minutes of a HELD price, whatever
+    ///         the time constant: the bigger the pump in price, the longer the pot stays cautious,
+    ///         and an attacker who controls consecutive blocks pays in blocks proportional to the
+    ///         move they want the pot to believe.
+    uint32 public constant REFERENCE_MAX_RISE_PER_MINUTE = 296;
+    /// @notice The spend bucket's TIME base: with no volume at all the pot may still spend one fee
+    ///         ceiling (`f·R`) per this long — a slow floor so a dead market's rare dump is still
+    ///         bought — refilling linearly.
+    uint32 public constant PUMP_REFILL = GlueLiquidity.PUMP_REFILL;
+    /// @notice The spend bucket's VOLUME credit: every funded swap credits the bucket with this
+    ///         multiple of the fee it paid (`k · fee · secondary moved`), capped at one fee ceiling.
+    ///         The pot's pace is therefore `k ×` what the pool earns: a hot market is bought hard, a
+    ///         dead one barely, and manufactured volume unlocks only `k ×` what it cost — so
+    ///         farming the pot needs a bag larger than `depth / 2k` of the pool.
+    uint256 public constant PUMP_FEE_LEVERAGE = GlueLiquidity.PUMP_FEE_LEVERAGE;
+    /// @notice The largest share of a swap's secondary the pump matches (0.6e18 = 60%), the share
+    ///         at or below the reference. Above it the share is `fee / premium`, so at a 0.3% fee
+    ///         the full share holds up to a 0.5% premium and halves for every doubling beyond.
+    uint256 public constant PUMP_SHARE_MAX_WAD = GlueLiquidity.PUMP_SHARE_MAX_WAD;
 
     /// @dev Share of the capped spend the pump actually uses (8_000 = 80%). The 20% it leaves behind is
-    ///      what puts the spend strictly INSIDE the sandwich break-even rather than exactly on it, plus
-    ///      headroom against the sizing quote drifting from real execution.
-    uint256 private constant PUMP_HAIRCUT_BPS = 8_000;
-    /// @dev Basis-point denominator.
-    uint256 private constant BPS = 10_000;
-    /// @dev Uniswap's fee denominator: a pool fee is expressed in millionths.
-    uint256 private constant FEE_DENOMINATOR = 1_000_000;
-    /// @dev The pump's own output floor is its quote shaved by 1 ppm — a rounding allowance, not slippage
-    ///      tolerance: the quote is the pool's own arithmetic run in the same transaction.
-    uint256 private constant MIN_OUT_SHAVE = 1e6;
-    /// @dev Largest fill either leg may carry, since a `BeforeSwapDelta` leg is a signed 128-bit value.
-    uint256 private constant MAX_LEG = uint256(uint128(type(int128).max));
+    ///      what puts the spend strictly INSIDE both break-evens — the sandwich's and the
+    ///      push-and-trade farm's — rather than exactly on them, plus headroom against the sizing
+    ///      quote drifting from real execution. Lives in {GlueLiquidity} with the sizing body.
+    uint256 private constant PUMP_HAIRCUT_BPS = GlueLiquidity.PUMP_HAIRCUT_BPS;
+    /// @dev The hook's own unlock op on top of {GluedV4Callback}'s four: the merged HARVEST
+    ///      (collect + compound mint in one `modifyLiquidity`). The literal MUST match the
+    ///      library's.
+    uint8 private constant OP_HARVEST = 5;
 
     /// @notice The Glue Protocol's GlueStick singleton — the SAME address on every chain. Pool
-    ///         creation ensures the main's glue through it ({IGlueStickMin.ensureWrapper}, best
-    ///         effort), and EVERY burn leg is a pure {IGlueStickMin.unglue} through it: the hook
-    ///         never destroys supply itself, the Glue Protocol does.
-    address public constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    ///         creation CLASSIFIES the main through its registry ({IGlueStickMin.wrapperOf}: a
+    ///         wrapper main resolves to itself, a glued main to its wrapper) and ensures a fresh
+    ///         main's glue through it ({IGlueStickMin.ensureWrapper}, best effort). EVERY burn leg
+    ///         then runs against the recorded glue — a pure {IGlueWrapperMin.unglue} on the main's
+    ///         own wrapper, or a PARK on a wrapper main: the hook never destroys supply itself, the
+    ///         Glue Protocol does. A program whose creator the registry reports as a REGISTERED LP
+    ///         engine ({IGlueStickMin.isRegisteredEngine}) is stamped NATIVE (see {IGlueHook}).
+    address public constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
 
     /// @notice This chain's canonical wrapped-native token — the WETH9-style wrapper Uniswap's own
     ///         periphery uses (WETH, WBNB, WPOL, WAVAX…). `address(0)` on a chain with no spendable
@@ -265,79 +323,36 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     }
 
     /**
-     * @notice The shield: absorb a main → secondary sell at the pool's own execution price.
-     * @dev Returns a `BeforeSwapDelta` that shrinks the pool leg by the absorbed input and credits the
-     *      seller with the pot's payout. Every path that cannot produce a balanced, pool-exact fill
-     *      returns a zero delta, which leaves the swap to the pool untouched.
-     * @param sender The address that called `PoolManager.swap`.
-     * @param key The pool key.
-     * @param params The swap parameters.
-     * @return selector The callback's own selector.
-     * @return hookDelta The packed `BeforeSwapDelta` (zero when the shield does not fire).
-     * @return lpFeeOverride Always zero — the hook never overrides the pool's fee.
-     */
-    function beforeSwap(
-        address sender,
-        IPoolManagerMin.PoolKey calldata key,
-        IPoolManagerMin.SwapParams calldata params,
-        bytes calldata
-    ) external returns (bytes4 selector, int256 hookDelta, uint24 lpFeeOverride) {
-        // Only the PoolManager may drive a hook callback
-        if (msg.sender != POOL_MANAGER) revert NotAllowed();
-        selector = this.beforeSwap.selector;
-        // The pot's own swaps are never shielded (the PoolManager skips them too; belt and braces)
-        if (sender == address(this)) return (selector, 0, 0);
-
-        bytes32 id = _idOf(key);
-        Pot storage p = _pots[id];
-        // An unconfigured or empty pot leaves the pool exactly as it found it
-        if (!p.configured || p.balance == 0) return (selector, 0, 0);
-
-        // Selling main means trading it for secondary — the only direction the shield touches
-        bool mainIsZero = p.main == key.currency0;
-        if (params.zeroForOne != mainIsZero) return (selector, 0, 0);
-
-        (uint256 absorbed, uint256 paid) = _shieldQuote(key, mainIsZero, p.balance, params.amountSpecified);
-        // Zero-rounding guard: a one-sided fill cannot be settled
-        if (absorbed == 0 || paid == 0) return (selector, 0, 0);
-        // A delta leg is a signed 128-bit value
-        if (absorbed > MAX_LEG || paid > MAX_LEG) return (selector, 0, 0);
-
-        _fillShield(id, p, absorbed, paid);
-
-        // The specified currency is the swapper's input on an exact-input swap and their output on an
-        // exact-output one, so the two legs swap places between the branches.
-        hookDelta = params.amountSpecified < 0
-            ? GluedV4Core.toBeforeSwapDelta(int128(int256(absorbed)), -int128(int256(paid)))
-            : GluedV4Core.toBeforeSwapDelta(-int128(int256(paid)), int128(int256(absorbed)));
-    }
-
-    /**
-     * @notice After every swap on a configured pool: harvest the LP program if armed, pump on a buy,
-     *         then place everything in ONE batched send phase.
+     * @notice After every swap on a configured pool: harvest the LP program if armed, observe the
+     *         reference and pump behind the swap, then place everything in ONE batched send phase.
      * @dev Order matters and is deliberate:
      *
      *        1. AUTO-HARVEST — when the pool carries a program whose pending fees reach a min, collect
-     *           and split them (the compound budget — slice + carry — re-mints into the program's own position in the same
-     *           frame). Runs FIRST so the harvest's buyback share is in the pot before the pump sizes
-     *           itself — a fresh fee credit is pump-able in the same swap. Behind a try/catch
-     *           self-call ({executeHarvest}), so it can never revert the carrying swap.
-     *        2. PUMP — on a secondary → main buy, spend pot secondary on more main. The spend is capped
-     *           against the carrying buy's own input, so the pump is never large enough to sandwich.
+     *           and split them (the compound budget — slice + carry — re-mints into the program's own
+     *           position in the same frame). Runs FIRST so the harvest's buyback share is in the pot
+     *           before the pump sizes itself — a fresh fee credit is pump-able in the same swap. Behind
+     *           a try/catch self-call ({executeHarvest}), so it can never revert the carrying swap.
+     *        2. OBSERVE — on a funded pool, advance the reference tick with the tick that stood since
+     *           the last swap, then record the tick this swap left ({_observe}). Bounded arithmetic
+     *           on the pot's own slot; an empty pot skips it, so a pool that only runs a program pays
+     *           nothing for a reference it does not use.
+     *        3. PUMP — in EITHER direction, spend pot secondary on main. Sized by {_pumpSize}: the fee
+     *           ceiling, the spend bucket, the reference-gated share of the secondary the swap just
+     *           moved, the haircut.
      *           {executePump} BOOKS what it bought instead of delivering it.
-     *        3. BATCHED SEND PHASE — the only external sends in the frame, after ALL bookkeeping: the
+     *        4. BATCHED SEND PHASE — the only external sends in the frame, after ALL bookkeeping: the
      *           harvest's burn leg and the pump's burn-intent output merge into ONE cascade walk, the
      *           pump's direct delivery and the harvest's main leg merge into ONE push when they share a
      *           recipient, and the secondary leg goes out last. A refusal parks or books, never reverts.
      *
-     *      The whole callback is `guarded`: a recipient re-entering during its bounded send hits the
+     *      The whole callback is `guarded`: a recipient re-entering during its full-gas send hits the
      *      transient guard on every state-bearing entry, including a nested `afterSwap`.
      * @param sender The address that called `PoolManager.swap`.
      * @param key The pool key.
      * @param params The swap parameters.
      * @param delta The swapper's balance delta for the swap that just executed.
      * @return selector The callback's own selector.
-     * @return hookDelta Always zero — the pump is the hook's own swap, not a delta on the buyer's.
+     * @return hookDelta Always zero — the pump is the hook's own swap, not a delta on the swapper's.
      */
     function afterSwap(
         address sender,
@@ -362,27 +377,34 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         // 1. AUTO-HARVEST — fires on any swap direction; credits the pot before the pump reads it
         (uint256 burnLeg, uint256 mainLeg, uint256 secLeg) = _autoHarvest(id, key, mainIsZero);
 
-        // 2. PUMP — only on a buy of main, only against a funded pot
+        // 2 + 3. OBSERVE and PUMP — only against a funded pot
         uint256 pumpBought;
-        if (p.balance != 0 && params.zeroForOne != mainIsZero) {
-            // The secondary the buyer just paid is the yardstick the pump is capped against. Both legs
-            // are in the delta, so it is read rather than quoted: the main leg must be a credit (they
-            // really did receive main) and the secondary leg a debit (they really did pay for it).
-            (int128 d0, int128 d1) = _unpackDelta(delta);
-            (int128 mainDelta, int128 secondaryDelta) = mainIsZero ? (d0, d1) : (d1, d0);
-            if (mainDelta > 0 && secondaryDelta < 0) {
-                (uint256 spend, uint256 minOut) =
-                    _pumpSize(key, p.main, p.balance, uint256(uint128(-secondaryDelta)));
+        if (p.balance != 0) {
+            // The pool's state after the swapper's trade: the tick the reference will see and the
+            // price the pump is sized at
+            GluedV4Core.Slot0 memory slot0 = GluedV4Core.getSlot0(POOL_MANAGER, id);
+            _observe(p, slot0.tick, mainIsZero);
+
+            // The secondary the swap moved is the yardstick the pump's demand ceiling is a share of
+            uint256 demand = _demandOf(delta, mainIsZero, params.zeroForOne != mainIsZero);
+            if (demand != 0) {
+                (uint256 spend, uint256 minOut, uint32 bucketCredited, uint32 bucketAfter) =
+                    _pumpSize(key, id, p, slot0, demand, p.referenceTickX8); // observed this block
+                // The swap's volume credit lands whether or not a pump follows it
+                uint32 bucket = bucketCredited;
                 if (spend != 0) {
-                    // Self-call: a revert in here rolls back the pump alone, never the buyer's swap
+                    // Self-call: a revert in here rolls back the pump alone, never the carrying swap
                     try this.executePump(id, key, !mainIsZero, spend, minOut) returns (uint256 bought) {
                         pumpBought = bought;
+                        // Only a pump that went through draws on the bucket
+                        bucket = bucketAfter;
                     } catch {}
                 }
+                if (bucket != 0 && bucket != p.pumpBucketTimestamp) p.pumpBucketTimestamp = bucket;
             }
         }
 
-        // 3. BATCHED SEND PHASE — nothing above pushed anything; everything below only pushes.
+        // 4. BATCHED SEND PHASE — nothing above pushed anything; everything below only pushes.
         // The pump's output runs the BUYBACK SPLIT inside {GlueLiquidity.place}: the compound leg
         // joins the program's carry, the burn leg and the harvest's merge into ONE cascade walk,
         // and the exact rest follows the pot's recipient.
@@ -391,7 +413,7 @@ contract GlueHook is GluedV4Callback, IGlueHook {
 
     /**
      * @notice The pump's swap, isolated in its own call frame.
-     * @dev Self-only. Runs inside the buyer's unlock, so it swaps through {_swapInUnlock} rather than
+     * @dev Self-only. Runs inside the swapper's unlock, so it swaps through {_swapInUnlock} rather than
      *      opening an unlock of its own. Reverting here is a valid outcome: it undoes the pot debit and
      *      the swap together and leaves the carrying transaction alone. The bought main stays on the
      *      hook — {afterSwap}'s batched send phase places it, merged with the harvest legs.
@@ -436,61 +458,33 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     }
 
     /**
-     * @notice The auto-harvest's collect-and-split, isolated in its own call frame.
-     * @dev Self-only, delegating to {GlueLiquidity}. Runs inside the swapper's unlock, so it
-     *      collects with a direct zero-delta `modifyLiquidity` rather than opening an unlock of its
-     *      own. Splits the fees off the gross of each side — buyback share into the pot, the
-     *      compound budget (this slice + the carry) re-minted into the program's position, burn
-     *      share and the two recipient legs RETURNED for the caller's batched send phase — but
-     *      sends nothing itself. Reverting here skips the harvest and leaves the carrying swap
-     *      alone; the fees stay safely uncollected in the position.
+     * @notice The auto-harvest's merged collect-compound-split, isolated in its own call frame.
+     * @dev Self-only, delegating to {GlueLiquidity-harvest}. Runs inside the swapper's unlock, so
+     *      it touches the position with ONE direct `modifyLiquidity`: the compound budget (this
+     *      harvest's slice + the standing carry) is sized off the pending fees the caller already
+     *      scanned and minted in the same call that collects them — only the net moves, verified
+     *      against V4's own `feesAccrued` and the budget. Splits the fees off the gross of each
+     *      side — buyback share into the pot, burn share and the two recipient legs RETURNED for
+     *      the caller's batched send phase — but sends nothing itself. Reverting here rolls the
+     *      whole frame back and leaves the carrying swap alone: the caller retries once with
+     *      `mint == false` (the collect-only path, compound budget carried), and if that fails too
+     *      the fees stay safely uncollected in the position.
      * @param id The pool identifier.
      * @param key The pool key.
-     * @param mainIsZero True when the pot's main is `currency0`.
+     * @param f0 Pending currency0 fees per the caller's scan.
+     * @param f1 Pending currency1 fees per the caller's scan.
+     * @param mint True to run the merged compound mint; false forces the collect-only path.
      * @return burnLeg Main-side slice for the burn cascade.
      * @return mainLeg Main-side slice for the program's main recipient.
      * @return secLeg Secondary-side slice for the program's secondary recipient.
      */
-    function executeHarvest(bytes32 id, IPoolManagerMin.PoolKey calldata key, bool mainIsZero)
+    function executeHarvest(bytes32 id, IPoolManagerMin.PoolKey calldata key, uint256 f0, uint256 f1, bool mint)
         external returns (uint256 burnLeg, uint256 mainLeg, uint256 secLeg)
     {
         // Only reachable from {afterSwap}
         if (msg.sender != address(this)) revert NotAllowed();
-
-        Program storage g = _programs[id];
-        (uint256 f0, uint256 f1) = GlueLiquidity.collectInSwap(POOL_MANAGER, g, key);
-        (uint256 fMain, uint256 fSec) = mainIsZero ? (f0, f1) : (f1, f0);
-        return GlueLiquidity.splitHarvest(_pots[id], g, _ledgers, id, key, fMain, fSec, true);
-    }
-
-    /**
-     * @notice The harvest's compound mint, isolated in its own call frame.
-     * @dev Self-only, delegating to {GlueLiquidity-compound}. Converts the compound budget (this
-     *      harvest's slice + the standing carry) into liquidity at the LIVE price across the
-     *      program's own fixed range — anchored on whichever side binds — and mints it into the
-     *      program's position, settled from the hook's own balance (the fees the harvest frame just
-     *      took plus the carried funds it already held). The mint may NEVER consume more than the
-     *      budget put on the table: a round-up edge abandons the whole compound (the split's
-     *      try/catch leaves the budget in the carry) rather than touching a wei of pot, parked,
-     *      held or owed money.
-     * @param id The pool identifier.
-     * @param key The pool key.
-     * @param amount0 Currency0 budget (the compound slice + carry on that side).
-     * @param amount1 Currency1 budget.
-     * @param inUnlock True when the PoolManager is already unlocked (the in-swap frame).
-     * @return used0 Currency0 the mint actually consumed.
-     * @return used1 Currency1 the mint actually consumed.
-     */
-    function executeCompound(
-        bytes32 id,
-        IPoolManagerMin.PoolKey calldata key,
-        uint256 amount0,
-        uint256 amount1,
-        bool inUnlock
-    ) external returns (uint256 used0, uint256 used1) {
-        // Only reachable from a harvest split
-        if (msg.sender != address(this)) revert NotAllowed();
-        return GlueLiquidity.compound(_programs[id], POOL_MANAGER, id, key, amount0, amount1, inUnlock);
+        ( , , burnLeg, mainLeg, secLeg) =
+            GlueLiquidity.harvest(_pots[id], _programs[id], _ledgers, POOL_MANAGER, id, key, f0, f1, true, mint);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -499,21 +493,22 @@ contract GlueHook is GluedV4Callback, IGlueHook {
 
     /**
      * @notice Declare a hooked pool's roles. One-shot, and only the pool's initialiser may call it.
-     * @dev Until this runs the hook does nothing on the pool: no shield, no pump, and {donate}
+     * @dev Until this runs the hook does nothing on the pool: no pump, no reference, and {donate}
      *      reverts. `main` must be one of the key's two currencies; the other becomes `secondary`
      *      automatically. `main` must be GLUEABLE — never the network token and never {NATIVEWRAP}
      *      (the burn path is Glue's unglue, and neither can run it); the declaration also ensures
      *      the main's glue exists ({GLUE_STICK}.`ensureWrapper`, best effort — a failure never
      *      blocks the pool, later burns just settle to the held ledger). The body lives in
      *      {GlueLiquidity.initPot} (delegatecall: same storage, same `msg.sender`, so the admin
-     *      gate is unchanged).
+     *      gate is unchanged); the reference tick is then seeded from the pool's live tick.
      * @param key The pool key (must already be initialised through this hook).
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn.
+     * @param recipient Where bought main goes; `address(0)` means burn.
      */
     function initPot(IPoolManagerMin.PoolKey calldata key, address main, address recipient) external {
         bytes32 id = _idOf(key);
-        GlueLiquidity.initPot(_pots[id], key, id, main, recipient, NATIVEWRAP);
+        GlueLiquidity.initPot(_pots[id], _ledgers, key, id, main, recipient, NATIVEWRAP);
+        _seedReference(_pots[id], id);
     }
 
     /**
@@ -536,7 +531,7 @@ contract GlueHook is GluedV4Callback, IGlueHook {
      * @param key The pool key (must name this hook).
      * @param sqrtPriceX96 The pool's initial sqrt price, Q64.96.
      * @param main The currency to defend, buy back and deliver.
-     * @param recipient Where bought / absorbed main goes; `address(0)` means burn (ERC20 main only).
+     * @param recipient Where bought main goes; `address(0)` means burn.
      * @param tickLower Lower tick, `(0,0)` = full range.
      * @param tickUpper Upper tick.
      * @param liquidity Liquidity units to mint as the program's seed.
@@ -573,7 +568,9 @@ contract GlueHook is GluedV4Callback, IGlueHook {
 
         // Declare the roles with the library's full one-shot validation — inside the delegatecall
         // `msg.sender` is the launcher, the admin just recorded
-        GlueLiquidity.initPot(_pots[id], key, id, main, recipient, NATIVEWRAP);
+        GlueLiquidity.initPot(_pots[id], _ledgers, key, id, main, recipient, NATIVEWRAP);
+        // The reference starts at the launch price
+        _seedReference(_pots[id], id);
 
         // Create the program and seed its liquidity, exactly as {addLiquidityAdvanced} would
         (amount0, amount1) = GlueLiquidity.createProgram(
@@ -615,7 +612,11 @@ contract GlueHook is GluedV4Callback, IGlueHook {
      * @dev Native secondary: attach the donation as value and pass `amount == msg.value`. ERC20
      *      secondary: attach no value and approve this hook first — the credit is the measured
      *      balance delta, so a fee-on-transfer token credits exactly what arrived. The pot's main
-     *      can never be donated: the credit is always denominated in secondary.
+     *      can never be donated: the credit is always denominated in secondary. A donation that
+     *      funds an EMPTY pot re-seeds the reference tick from the live price first — an empty pot
+     *      observes nothing, so whatever it last saw is stale; the pump it now enables starts from
+     *      the price the market stands at (a donor who moved that price only exposes their own
+     *      donation, and every later swap corrects the reference).
      * @param key The pool key whose pot is funded.
      * @param amount The donation amount.
      * @return credited The amount actually added to the pot.
@@ -636,6 +637,8 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         credited = _pullToken(secondary, msg.sender, address(this), amount);
         if (credited == 0) revert BadDonation();
 
+        // An empty pot has not been observing: restart the reference from where the market stands
+        if (p.balance == 0) _seedReference(p, id);
         p.balance += credited;
         _ledgers.potTotal[secondary] += credited;
         emit Donated(id, msg.sender, credited);
@@ -870,7 +873,7 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     /**
      * @notice Pull everything booked to the caller in `asset`. Full-gas, reverting delivery.
      * @dev The claimer chose to be here, so a refusal reverts and leaves the book intact — unlike
-     *      the harvest's bounded pushes, which never revert and book refusals here.
+     *      the harvest's pushes, which never revert and book refusals here.
      * @param asset The asset to claim.
      * @return amount The amount delivered.
      */
@@ -912,6 +915,17 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         return _ledgers.owed[to][asset];
     }
 
+    /// @notice Cumulative harvest legs DELIVERED to a native program's engine in `asset`.
+    /// @dev Monotonic. The engine attributes from `recordHarvest` and reconciles any failed
+    ///      callback by diffing this against its own cursor — the exactly-once source of truth.
+    ///      Zero for every non-native program.
+    /// @param poolId The pool identifier.
+    /// @param asset The pool currency (`address(0)` = native).
+    /// @return amount The cumulative delivered total.
+    function deliveredCumOf(bytes32 poolId, address asset) external view returns (uint256 amount) {
+        return _ledgers.deliveredCum[poolId][asset];
+    }
+
     /// @notice Main that a live recipient refused and that therefore sits on the hook, retryable
     ///         through {flushDirect}.
     /// @param asset The main currency.
@@ -951,41 +965,54 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     }
 
     /**
-     * @notice Preview what the shield would do to a sell right now.
-     * @dev Mirrors the live `beforeSwap` decision, so a UI or a test can quote the pot's fill
-     *      without executing a swap. Returns zeros when the pot is unconfigured, empty, or the sell
-     *      is not in the shielded direction.
+     * @notice Preview the pump a swap moving this much secondary would trigger right now.
+     * @dev Mirrors the live `afterSwap` sizing ({_pumpSize}) at the current spot: the fee ceiling
+     *      `f·R`, the spend bucket as it has refilled to this block, the reference-gated share of
+     *      the demand (the reference projected to this block), the haircut, and the pool-exact
+     *      output floor.
      * @param key The pool key.
-     * @param amountSpecified The swap amount in V4's convention: negative for exact input, positive
-     *        for exact output.
-     * @return absorbed Main the pot would take out of the sell.
-     * @return paid Secondary the pot would pay for it.
-     */
-    function quoteShield(IPoolManagerMin.PoolKey calldata key, int256 amountSpecified)
-        external view returns (uint256 absorbed, uint256 paid)
-    {
-        Pot storage p = _pots[_idOf(key)];
-        // Mirror the live gate: an unconfigured or empty pot fills nothing
-        if (!p.configured || p.balance == 0) return (0, 0);
-        return _shieldQuote(key, p.main == key.currency0, p.balance, amountSpecified);
-    }
-
-    /**
-     * @notice Preview the pump a buy of this size would trigger right now.
-     * @dev Mirrors the live `afterSwap` sizing ({_pumpSize}): the fee ceiling `f·R`, the demand
-     *      ceiling of the carrying buy, the haircut, and the pool-exact output floor.
-     * @param key The pool key.
-     * @param userAmountIn The secondary the carrying buy pays, which is the pump's demand ceiling.
+     * @param demand The secondary the carrying swap moves — paid on a buy of main, received on a
+     *        sell of main.
      * @return spend Secondary the pot would spend.
      * @return minOut The output floor the pump would enforce on itself.
      */
-    function quotePump(IPoolManagerMin.PoolKey calldata key, uint256 userAmountIn)
+    function quotePump(IPoolManagerMin.PoolKey calldata key, uint256 demand)
         external view returns (uint256 spend, uint256 minOut)
     {
-        Pot storage p = _pots[_idOf(key)];
+        bytes32 id = _idOf(key);
+        Pot storage p = _pots[id];
         // Mirror the live gate: an unconfigured or empty pot buys nothing
         if (!p.configured || p.balance == 0) return (0, 0);
-        return _pumpSize(key, p.main, p.balance, userAmountIn);
+        (int32 refX8, ) = _projectReference(p, p.main == key.currency0);
+        (spend, minOut, , ) = _pumpSize(key, id, p, GluedV4Core.getSlot0(POOL_MANAGER, id), demand, refX8);
+    }
+
+    /**
+     * @notice The reference gate as it stands right now: the share of a swap's secondary the pump
+     *         may match, the live tick and the reference tick it is measured against.
+     * @dev The reference is projected to this block exactly as {_observe} would advance it, so the
+     *      share is the one a swap in this block would be sized with. The fee is the pool's live
+     *      composed fee in the pump's own direction.
+     * @param poolId The pool identifier.
+     * @return shareWad The demand share (1e18 = 100%).
+     * @return spotTick The pool's live tick.
+     * @return referenceTick The reference tick, floored to a whole tick.
+     */
+    function pumpShareOf(bytes32 poolId)
+        external view returns (uint256 shareWad, int24 spotTick, int24 referenceTick)
+    {
+        Pot storage p = _pots[poolId];
+        // No roles, no gate
+        if (!p.configured) return (0, 0, 0);
+        GluedV4Core.Slot0 memory slot0 = GluedV4Core.getSlot0(POOL_MANAGER, poolId);
+        // Main is currency0 exactly when it is the lower address (V4 sorts a key's currencies);
+        // the pump sells secondary, so it swaps zeroForOne exactly when main is currency1
+        bool mainIsZero = p.main < p.secondary;
+        (int32 refX8, ) = _projectReference(p, mainIsZero);
+        uint24 fee = GluedV4Core.swapFee(slot0.protocolFee, slot0.lpFee, !mainIsZero);
+        shareWad = _pumpShare(slot0.tick, refX8, fee, mainIsZero);
+        spotTick = slot0.tick;
+        referenceTick = int24(refX8 >> 8);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
@@ -993,11 +1020,14 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     /**
-     * @dev The auto-harvest trigger, run on every swap of a configured pool. Cheap when idle: one
-     *      program read gates everything, and the pending-fee computation only runs on pools that
-     *      actually carry liquidity. Fires when either side's pending fees reach its armed min, and
-     *      routes through the {executeHarvest} self-call so a failure skips the harvest silently
-     *      rather than reverting the carrying swap.
+     * @dev The auto-harvest trigger, run on every swap of a configured pool. FREE when idle: the
+     *      program's first slot gates everything — no program, nothing staked, or a program whose
+     *      config leaves both mins at `type(uint256).max` (the plain {addLiquidity} default) costs
+     *      the swap that one read and never runs the pending-fee scan. Armed, the scan runs and the
+     *      harvest fires when either side's pending fees reach its min, through the
+     *      {executeHarvest} self-call so a failure skips the harvest silently rather than
+     *      reverting the carrying swap: the merged collect + compound first, the collect-only path
+     *      as its fallback.
      * @param id The pool identifier.
      * @param key The pool key.
      * @param mainIsZero True when the pot's main is `currency0`.
@@ -1009,8 +1039,8 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         private returns (uint256 burnLeg, uint256 mainLeg, uint256 secLeg)
     {
         Program storage g = _programs[id];
-        // No program, or a program with nothing staked: nothing to collect
-        if (g.liquidity == 0) return (0, 0, 0);
+        // No program, nothing staked, or both mins disarmed: nothing to scan (one slot read)
+        if (g.liquidity == 0 || !g.armed) return (0, 0, 0);
 
         (uint256 f0, uint256 f1) = GluedV4Core.getPendingV4Fees(
             POOL_MANAGER, id, address(this), g.tickLower, g.tickUpper, GluedV4Core.positionSalt(address(this))
@@ -1020,17 +1050,23 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         if ((fMain | fSec) == 0) return (0, 0, 0);
         if (fMain < g.minMain && fSec < g.minSecondary) return (0, 0, 0);
 
-        // Self-call: a revert in here skips the harvest alone, never the carrying swap
-        try this.executeHarvest(id, key, mainIsZero) returns (uint256 b, uint256 m, uint256 s) {
+        // Self-call: a revert in here skips the harvest alone, never the carrying swap. The merged
+        // mint goes first; should its guard trip (a 1-wei round-up edge, a fee mismatch), the
+        // collect-only path lands the harvest and carries the compound budget instead.
+        try this.executeHarvest(id, key, f0, f1, true) returns (uint256 b, uint256 m, uint256 s) {
             return (b, m, s);
-        } catch {}
+        } catch {
+            try this.executeHarvest(id, key, f0, f1, false) returns (uint256 b, uint256 m, uint256 s) {
+                return (b, m, s);
+            } catch {}
+        }
     }
 
     /**
-     * @dev The outside-unlock harvest: collect through the hook's own unlock, split (compound
-     *      included), place. The shared body of the public {harvest} and the harvest-first rule of
-     *      the liquidity ops. A program with nothing staked is a silent no-op so the liquidity ops
-     *      can call it blindly.
+     * @dev The outside-unlock harvest: scan the pending fees, run the merged collect + compound
+     *      through the hook's own HARVEST unlock (collect-only as its fallback), split, place. The
+     *      shared body of the public {harvest} and the harvest-first rule of the liquidity ops. A
+     *      program with nothing staked is a silent no-op so the liquidity ops can call it blindly.
      * @param id The pool identifier.
      * @param key The pool key.
      * @return fMain Fees collected on the main side.
@@ -1042,16 +1078,36 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         Program storage g = _programs[id];
         if (g.liquidity == 0) return (0, 0);
 
-        // Collect to the hook through its own unlock (we are NOT inside a swap here)
-        (uint256 f0, uint256 f1) = GlueLiquidity.collectOwnUnlock(POOL_MANAGER, g, key);
-
+        // With a compound share or a standing carry there may be something to mint: scan the
+        // pending fees first, so the mint can be sized and run in the same call that collects
+        // them (we are NOT inside a swap here: the hook's own HARVEST unlock). Otherwise the
+        // plain collect is the whole touch and the scan is skipped.
+        uint256 f0;
+        uint256 f1;
+        bool mint = g.compoundShareWad != 0 || (g.carryMain | g.carrySecondary) != 0;
+        if (mint) {
+            (f0, f1) = GluedV4Core.getPendingV4Fees(
+                POOL_MANAGER, id, address(this), g.tickLower, g.tickUpper, GluedV4Core.positionSalt(address(this))
+            );
+        }
         Pot storage p = _pots[id];
-        (fMain, fSec) = p.main == key.currency0 ? (f0, f1) : (f1, f0);
-        (uint256 burnLeg, uint256 mainLeg, uint256 secLeg) =
-            GlueLiquidity.splitHarvest(p, g, _ledgers, id, key, fMain, fSec, false);
+        uint256 burnLeg;
+        uint256 mainLeg;
+        uint256 secLeg;
+        (fMain, fSec, burnLeg, mainLeg, secLeg) =
+            GlueLiquidity.harvest(p, g, _ledgers, POOL_MANAGER, id, key, f0, f1, false, mint);
 
         // Placement: the SAME send phase as the in-swap frame, with no pot output to place
         GlueLiquidity.place(p, g, _ledgers, id, burnLeg, mainLeg, secLeg, 0);
+    }
+
+    /// @notice The hook's own unlock op on top of {GluedV4Callback}'s: the merged HARVEST
+    ///         (collect + compound mint in one `modifyLiquidity`) for the manual path.
+    /// @dev Reached only from the PoolManager's callback (the base already gated `msg.sender`),
+    ///      and only for the op the hook itself encoded in {GlueLiquidity-harvest}.
+    function _handleExtension(uint8 opType, bytes memory params) internal override returns (bytes memory) {
+        if (opType != OP_HARVEST) revert NotAllowed();
+        return GlueLiquidity.harvestCallback(POOL_MANAGER, params);
     }
 
     /// @dev The transient PAYER slot: `keccak256("GlueHook.payer")` (a literal because inline
@@ -1074,177 +1130,205 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     // ═══════════════════════════════════════════════════════════════════════════════
 
     /**
-     * @dev Price a sell against the pool's own arithmetic and decide how much of it the pot takes.
+     * @dev The secondary a swap moved, read off its delta rather than quoted — the yardstick the
+     *      pump's demand ceiling is a share of. On a buy of main it is what the swapper PAID (the
+     *      secondary leg a debit, the main leg a credit); on a sell of main it is what they
+     *      RECEIVED (the mirror). A delta that does not have the direction's shape — which a
+     *      hook-less pool cannot produce, but a zero-output dust swap can — sizes nothing.
      *
-     *      EXACT INPUT. Quote the sell as one pool-exact step. If the pot can pay for it, the pot takes
-     *      the entire step — which may itself be less than the sell when the step is bounded by a tick,
-     *      leaving the remainder to the pool. If the pot cannot pay for it, flip the question around and
-     *      ask what input the pool would have demanded to pay out the whole pot: that input is the slice
-     *      the pot absorbs, priced exactly as the pool would have priced it.
-     *
-     *      EXACT OUTPUT. The pot pays at most what the swapper asked for and at most what it holds, and
-     *      the absorbed input is what the pool would have demanded for that output.
-     *
-     *      Both branches are capped by the main currency actually sitting in the PoolManager, because
-     *      settling the fill takes that currency out of it. The cap is applied to the INPUT side before
-     *      quoting so the payout stays the pool's own arithmetic for the slice actually absorbed — a pot
-     *      richer than the pool it defends shields as much as the venue can hand over and lets the rest
-     *      through, rather than declining the whole sell.
-     *
-     *      Every branch returns zeros rather than a fill it cannot price, and no branch can pay more
-     *      than the pool would have paid for the same input.
-     * @param key The pool key.
-     * @param mainIsZero True when main is `currency0` (so the sell moves the price down).
-     * @param pot The pot's secondary inventory.
-     * @param amountSpecified The swap amount in V4's convention.
-     * @return absorbed Main the pot takes out of the sell.
-     * @return paid Secondary the pot pays for it.
+     *      A measured quantity, deliberately: converting the swap's main leg into secondary would
+     *      need a quote, and a quote of a pot-sized swap divides by an average execution price
+     *      rather than the marginal one — which reads a fat pot's own price impact as extra demand
+     *      and would let the pump outrun the swap that triggered it by exactly that factor.
+     * @param delta The swapper's balance delta.
+     * @param mainIsZero True when main is `currency0`.
+     * @param buy True when the swap bought main (secondary → main).
+     * @return demand Secondary paid (buy) or received (sell); zero when the delta has another shape.
      */
-    function _shieldQuote(
-        IPoolManagerMin.PoolKey calldata key,
-        bool mainIsZero,
-        uint256 pot,
-        int256 amountSpecified
-    ) private view returns (uint256 absorbed, uint256 paid) {
-        // Selling main is `zeroForOne` exactly when main is currency0
-        bool sellZero = mainIsZero;
-        // Main the fill could actually be settled out of
-        uint256 cap = _balanceOf(mainIsZero ? key.currency0 : key.currency1, POOL_MANAGER);
-        // Nothing to take: nothing to shield
-        if (cap == 0) return (0, 0);
-
-        if (amountSpecified < 0) {
-            uint256 offered = uint256(-amountSpecified);
-            // Quote no more input than the venue can settle
-            (absorbed, paid) =
-                GluedV4Core.quoteSwapStep(POOL_MANAGER, key, sellZero, -int256(offered < cap ? offered : cap));
-            if (absorbed == 0 || paid == 0) return (0, 0);
-            // Affordable: take the step as quoted
-            if (paid <= pot) return (absorbed, paid);
-
-            // Pot-limited: the pot pays everything it has, for the input the pool would have demanded
-            (absorbed, paid) = GluedV4Core.quoteSwapStep(POOL_MANAGER, key, sellZero, int256(pot));
-            // A fill can never consume more input than the swapper offered or than the venue holds
-            if (absorbed == 0 || paid == 0 || absorbed > offered || absorbed > cap) return (0, 0);
-            return (absorbed, paid);
-        }
-
-        // Exact output: bounded by the swapper's request and by the pot
-        uint256 want = uint256(amountSpecified);
-        (absorbed, paid) = GluedV4Core.quoteSwapStep(POOL_MANAGER, key, sellZero, int256(want < pot ? want : pot));
-        // The fill can never hand over more output than was asked for
-        if (absorbed == 0 || paid == 0 || paid > want) return (0, 0);
-        // Too large to settle: re-ask as an exact input of everything the venue holds
-        if (absorbed > cap) {
-            (absorbed, paid) = GluedV4Core.quoteSwapStep(POOL_MANAGER, key, sellZero, -int256(cap));
-            if (absorbed == 0 || paid == 0 || paid > want || paid > pot || absorbed > cap) return (0, 0);
+    function _demandOf(int256 delta, bool mainIsZero, bool buy) private pure returns (uint256 demand) {
+        (int128 d0, int128 d1) = _unpackDelta(delta);
+        (int128 mainDelta, int128 secondaryDelta) = mainIsZero ? (d0, d1) : (d1, d0);
+        if (buy) {
+            // They really did receive main, and really did pay secondary for it
+            if (mainDelta > 0 && secondaryDelta < 0) demand = uint256(-int256(secondaryDelta));
+        } else {
+            // They really did hand over main, and really were paid secondary for it
+            if (mainDelta < 0 && secondaryDelta > 0) demand = uint256(int256(secondaryDelta));
         }
     }
 
     /**
      * @dev Size the pump and derive its own output floor.
      *
-     *      TWO independent ceilings, and the pump takes the smaller.
+     *      FOUR ceilings, and the pump takes the smallest.
      *
-     *      1. THE FEE CEILING — what makes the pump unsandwichable, and the only bound that actually
-     *      has to hold. A pump is a market buy somebody else's transaction triggers, which is exactly
-     *      the shape of a victim in a sandwich: buy in front of it, let it push the price up, sell
-     *      behind it. Run that on a constant-product pool of depth `R` with an attacker leg `X` and a
-     *      pump of `V`, and the gross profit is exactly `R·u·v·(2+u+v)/((1+u)² + u·v)` for `u = X/R`,
-     *      `v = V/R` — that is `2·X·V/R` at leading order. The attacker's fees are `f·X` on the way in
-     *      and `f·X`-worth on the way out, so the attack pays if and only if `2·X·V/R > 2·f·X`, i.e.
-     *      `V > f·R`. The attacker's own size cancels out entirely: one bound on the pump's spend closes
-     *      the attack for every attacker size, pot depth and price at once. `R` is the pool's tangent
-     *      depth at its live price ({GluedV4Core-tangentReserve}) and `f` its live composed fee, so a
-     *      deeper pool or a fatter fee tier earns a proportionally larger pump and nothing is hardcoded.
+     *      1. THE FEE CEILING — what makes the pump unsandwichable. A pump is a market buy somebody
+     *      else's transaction triggers, which is exactly the shape of a victim in a sandwich: buy in
+     *      front of it, let it push the price up, sell behind it. Run that on a constant-product pool
+     *      of depth `R` with an attacker leg `X` and a pump of `V`, and the gross profit is exactly
+     *      `R·u·v·(2+u+v)/((1+u)² + u·v)` for `u = X/R`, `v = V/R` — that is `2·X·V/R` at leading
+     *      order. The attacker's fees are `f·X` on the way in and `f·X`-worth on the way out, so the
+     *      attack pays if and only if `2·X·V/R > 2·f·X`, i.e. `V > f·R`. The attacker's own size
+     *      cancels out entirely: one bound on the pump's spend closes the attack for every attacker
+     *      size, pot depth and price at once. `R` is the pool's tangent depth at its live price
+     *      ({GluedV4Core-tangentReserve}) and `f` its live composed fee, so a deeper pool or a fatter
+     *      fee tier earns a proportionally larger pump and nothing is hardcoded.
      *
-     *      2. THE DEMAND CEILING — gradualism, not safety. The pump never spends more secondary than the
-     *      carrying buy just paid, so a dust buy unlocks a dust pump and the pot is spent in step with
-     *      real demand instead of all at once. The buy's own input is the yardstick because it is a
-     *      MEASURED quantity out of the swap's delta: converting the buy's main output back into
-     *      secondary would need a quote, and a quote of a pot-sized swap divides by an average execution
-     *      price rather than the marginal one — which reads a fat pot's own price impact as extra demand
-     *      and would let the pump outrun the buy that triggered it by exactly that factor.
+     *      2. THE SPEND BUCKET — what paces the pot to what the pool EARNS. The fee ceiling bounds
+     *      ONE pump; it says nothing about a thousand of them in a block. A holder of a large bag
+     *      could otherwise manufacture volume at or below the reference (cheap round trips, each
+     *      summoning a pump) and compress the pot's whole spend into a moment they alone are
+     *      positioned for. The bucket holds at most one fee ceiling and refills from TWO sources:
+     *      every funded swap credits it `PUMP_FEE_LEVERAGE × the fee it paid` (`k·f·demand`), and
+     *      time credits it one ceiling per {PUMP_REFILL} as a slow floor. A pump spends at most the
+     *      bucket's level; the spend moves the level down by what it used. So over any window the
+     *      pot spends at most `k × the LP fees earned + f·R × window / PUMP_REFILL`: a hot market is
+     *      bought hard, a dead one barely, a single sell of `depth / k` fills the bucket by itself,
+     *      and manufactured volume unlocks only `k ×` what it cost — a farmer's bag must exceed
+     *      `depth / 2k` of the pool before the round trips pay, held the whole time and lifted no
+     *      more than every other holder. Encoded in ONE timestamp packed with `main` (the level is
+     *      the time it would have taken to refill; a credit moves the timestamp back, a spend moves
+     *      it forward; a fresh pot reads as full).
+     *
+     *      3. THE DEMAND CEILING — gradualism: the pump never spends more than a SHARE of the
+     *      secondary the carrying swap just moved (paid on a buy, received on a sell), so a dust
+     *      trade unlocks a dust pump and the pot is spent in step with real flow instead of all at
+     *      once.
+     *
+     *      4. THE REFERENCE GATE — what makes the demand ceiling unfarmable, by setting that share.
+     *      A trader who pushes spot a premium `d` above the reference and then trades summons a pump
+     *      at the inflated price and can sell into it; pushing costs `2·f` per unit pushed and the
+     *      pump hands back at most `d` per unit of pump. Both legs of the round trip — the push and
+     *      the dump — present demand at the premium, so with a share `s` of each the pumps hand back
+     *      `2·s·d` per unit and the round trip pays only if `2·s·d > 2·f`. {_pumpShare} therefore
+     *      returns `min(60%, f/d)`: break-even at best before the haircut, a loss after it, and the
+     *      full share whenever spot is at or below the reference — where there is no premium to
+     *      sell into.
      *
      *      {PUMP_HAIRCUT_BPS} then applies to whichever ceiling won, which puts the spend strictly
-     *      inside the fee ceiling rather than exactly on it.
+     *      inside both break-evens rather than exactly on them.
      *
      *      The output floor is quoted with the pool-exact step quoter, which never over-states, so a real
      *      swap cannot trip a floor the pool itself produced.
      * @param key The pool key.
-     * @param main The defended currency.
-     * @param pot The pot's secondary inventory.
-     * @param userIn Secondary the carrying buy paid.
+     * @param id The pool identifier.
+     * @param p The pool's pot (its balance, main, bucket and reference are read).
+     * @param slot0 The pool's live slot0 — the state the swapper's trade left behind.
+     * @param demand Secondary the carrying swap moved.
      * @return spend Secondary to spend on the pump.
      * @return minOut Output floor for the pump's own swap.
+     * @return bucketCredited The bucket timestamp after this swap's volume credit, before any spend
+     *         — what to store when the pump does not run or reverts.
+     * @return bucketAfter The bucket timestamp after the credit AND this spend — what to store once
+     *         the pump has gone through.
      */
     function _pumpSize(
         IPoolManagerMin.PoolKey calldata key,
-        address main,
-        uint256 pot,
-        uint256 userIn
-    ) private view returns (uint256 spend, uint256 minOut) {
-        // No pot, or no buy to size against
-        if (pot == 0 || userIn == 0) return (0, 0);
-        // Buying main means selling secondary, so the direction is the mirror of the shield's
-        bool zeroForOne = main != key.currency0;
+        bytes32 id,
+        Pot storage p,
+        GluedV4Core.Slot0 memory slot0,
+        uint256 demand,
+        int32 refX8
+    ) private view returns (uint256 spend, uint256 minOut, uint32 bucketCredited, uint32 bucketAfter) {
+        return GlueLiquidity.pumpSize(POOL_MANAGER, key, id, p, slot0, demand, refX8);
+    }
 
-        // 1. The fee ceiling: f·R on the side the pot spends
-        {
-            bytes32 id = _idOf(key);
-            GluedV4Core.Slot0 memory slot0 = GluedV4Core.getSlot0(POOL_MANAGER, id);
-            // The secondary is the input, so it is currency0 exactly when the pump swaps zeroForOne
-            uint256 depth = GluedV4Core.tangentReserve(
-                slot0.sqrtPriceX96, GluedV4Core.getPoolLiquidity(POOL_MANAGER, id), zeroForOne
-            );
-            // `slot0.lpFee`, never `key.fee`: Slot0 is the fee the pool actually charges. On the
-            // static-fee pools this hook serves the two always agree — the live slot is simply the
-            // authoritative source (and it composes with the protocol fee in {GluedV4Core.swapFee}).
-            uint256 feeCap = GluedMath.md512(
-                depth, GluedV4Core.swapFee(slot0.protocolFee, slot0.lpFee, zeroForOne), FEE_DENOMINATOR
-            );
-            // A pool with no depth, or a zero-fee pool, can never host a pump that cannot be sandwiched
-            if (feeCap == 0) return (0, 0);
-            spend = pot < feeCap ? pot : feeCap;
+    /**
+     * @dev The reference gate's share: the fraction of the carrying swap's secondary the pump may
+     *      match at this spot.
+     *
+     *      `d` is MAIN's premium over the reference, `1.0001^Δ − 1` for the tick gap `Δ` oriented
+     *      so that a positive gap is a dearer main: a V4 tick is the log-price of currency0 in
+     *      currency1, so the gap is `spot − ref` when main is currency0 (main's price rises with
+     *      the tick) and `ref − spot` when main is currency1 (its reciprocal). The reference is rounded to
+     *      the whole tick on the side that makes the gap read a hair LARGER — the strict side. At
+     *      or below the reference the share is {PUMP_SHARE_MAX_WAD}; above it, `f / d` capped
+     *      there — the level at which pushing main up by `d` to farm the pump costs exactly what
+     *      the pump can hand back, see {_pumpSize}. Pure and bounded: the gap is clamped to the
+     *      tick range, so nothing in here can revert.
+     * @param spotTick The pool's live tick.
+     * @param refX8 The reference tick in 1/256ths.
+     * @param fee The pool's live composed fee in millionths, in the pump's direction.
+     * @param mainIsZero True when main is `currency0`.
+     * @return shareWad The share (1e18 = 100%).
+     */
+    function _pumpShare(int24 spotTick, int32 refX8, uint24 fee, bool mainIsZero)
+        private pure returns (uint256 shareWad)
+    {
+        return GlueLiquidity.pumpShare(spotTick, refX8, fee, mainIsZero);
+    }
+
+    /**
+     * @dev The reference tick as it stands NOW: the stored value advanced by the observation this
+     *      block would make. An observation moves the reference `min(1, dt / REFERENCE_TAU)` of the
+     *      way from where it is to the tick that stood since the last one — `lastTick`, the tick the
+     *      PREVIOUS swap left, never the current one — so a swap in the same block as the last
+     *      (`dt == 0`) moves nothing, and nothing done to spot inside a block enters the reference.
+     *      Wrapping, bounded integer arithmetic throughout: the step is a convex combination of two
+     *      in-range ticks, so the result always fits its slot and the division is by a constant.
+     * @param p The pool's pot.
+     * @return refX8 The projected reference in 1/256ths of a tick.
+     * @return dt Seconds since the last observation (zero when this block already observed).
+     */
+    function _projectReference(Pot storage p, bool mainIsZero)
+        private view returns (int32 refX8, uint32 dt)
+    {
+        unchecked {
+            dt = uint32(block.timestamp) - p.lastTimestamp;
+            int256 ref = int256(p.referenceTickX8);
+            if (dt != 0) {
+                uint256 step = dt > REFERENCE_TAU ? REFERENCE_TAU : dt;
+                int256 move =
+                    ((int256(p.lastTick) << 8) - ref) * int256(step) / int256(uint256(REFERENCE_TAU));
+                // The rise cap: main may not get dearer in the reference faster than
+                // REFERENCE_MAX_RISE_PER_MINUTE, whatever stood. A dearer main is a HIGHER tick when
+                // main is currency0 and a LOWER one when it is currency1. Falls are never capped.
+                int256 maxRise =
+                    int256(uint256(REFERENCE_MAX_RISE_PER_MINUTE) << 8) * int256(uint256(dt)) / 60;
+                if (mainIsZero) {
+                    if (move > maxRise) move = maxRise;
+                } else {
+                    if (move < -maxRise) move = -maxRise;
+                }
+                ref += move;
+            }
+            refX8 = int32(ref);
         }
+    }
 
-        // 2. The demand ceiling: never outrun the buy that carried us
-        if (userIn < spend) spend = userIn;
+    /// @dev Record an observation behind a swap: advance the reference with the tick that stood
+    ///      since the last swap ({_projectReference}), then note the tick this swap left as the one
+    ///      standing from now on. A same-block swap only refreshes the standing tick, so within a
+    ///      block the LAST swap's tick is the one that will count — holding a price across the block
+    ///      boundary, against the whole market, is the only way into the reference.
+    /// @param p The pool's pot.
+    /// @param spotTick The pool's tick after the swap.
+    /// @param mainIsZero True when main is `currency0` (orients the rise cap).
+    function _observe(Pot storage p, int24 spotTick, bool mainIsZero) private {
+        (int32 refX8, uint32 dt) = _projectReference(p, mainIsZero);
+        if (dt != 0) {
+            p.referenceTickX8 = refX8;
+            p.lastTimestamp = uint32(block.timestamp);
+            p.lastTick = spotTick;
+        } else if (p.lastTick != spotTick) {
+            p.lastTick = spotTick;
+        }
+    }
 
-        // Strictly inside whichever ceiling won
-        spend = GluedMath.md512(spend, PUMP_HAIRCUT_BPS, BPS);
-        if (spend == 0) return (0, 0);
-
-        ( , minOut) = GluedV4Core.quoteSwapStep(POOL_MANAGER, key, zeroForOne, -int256(spend));
-        // Without a pool-exact quote there is no floor to enforce, so there is no pump
-        if (minOut == 0) return (0, 0);
-        // Rounding allowance on a same-transaction quote of the pool's own arithmetic
-        minOut -= minOut / MIN_OUT_SHAVE;
+    /// @dev Start the reference from the pool's live tick: at {initPot}, and whenever a donation
+    ///      funds an empty pot (an empty pot observes nothing, so whatever it last saw is stale).
+    /// @param p The pool's pot.
+    /// @param id The pool identifier.
+    function _seedReference(Pot storage p, bytes32 id) private {
+        int24 tick = GluedV4Core.getSlot0(POOL_MANAGER, id).tick;
+        p.referenceTickX8 = int32(tick) << 8;
+        p.lastTick = tick;
+        p.lastTimestamp = uint32(block.timestamp);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // INTERNAL — EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════════
-
-    /// @dev Settle the shield's side of a swap: debit the pot, take the absorbed main out of the
-    ///      PoolManager, pay the seller's secondary into it, then place the main through the
-    ///      delivery engine — the BUYBACK SPLIT runs on the absorbed main exactly as on a pump's
-    ///      output. State first, then movement, then delivery — so nothing re-entered can see the
-    ///      pot's money twice.
-    /// @param id The pool identifier.
-    /// @param p The pool's pot.
-    /// @param absorbed Main taken out of the sell.
-    /// @param paid Secondary paid for it.
-    function _fillShield(bytes32 id, Pot storage p, uint256 absorbed, uint256 paid) private {
-        p.balance -= paid;
-        _ledgers.potTotal[p.secondary] -= paid;
-
-        IPoolManagerMin(POOL_MANAGER).take(p.main, address(this), absorbed);
-        _settleV4(p.secondary, paid);
-
-        emit Shielded(id, absorbed, paid);
-        GlueLiquidity.place(p, _programs[id], _ledgers, id, 0, 0, 0, absorbed);
-    }
 
     /// @dev Reverting send of the native currency or an ERC20 — the strict outgoing primitive for the
     ///      caller's own transaction (claims, refunds, liquidity principal).
@@ -1277,16 +1361,11 @@ contract GlueHook is GluedV4Callback, IGlueHook {
         return balanceAfter > balanceBefore ? balanceAfter - balanceBefore : 0;
     }
 
-    /// @dev Balance of the native currency or an ERC20.
-    function _balanceOf(address token, address account) private view returns (uint256) {
-        return token == ETH_ADDRESS ? account.balance : IERC20(token).balanceOf(account);
-    }
-
     /// @notice How the V4 callback frame ({GluedV4Callback}) moves an ERC20 into the PoolManager.
     /// @dev While the transient PAYER is set — only ever inside a liquidity add's unlock — the leg
     ///      is pulled straight from the payer's allowance at the exact amount owed, so a position is
     ///      always funded by its caller and never by the hook's own inventory. With no payer set it
-    ///      is a plain reverting send from the hook's own balance (the pump/shield settle paths).
+    ///      is a plain reverting send from the hook's own balance (the pump's settle path).
     function _transferToken(address token, address to, uint256 amount) internal override {
         address payer = _getPayer();
         if (payer != address(0)) {

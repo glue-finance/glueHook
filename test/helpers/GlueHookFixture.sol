@@ -21,15 +21,15 @@ import {MockGlueStick} from "../mocks/MockGlueStick.sol";
 abstract contract GlueHookFixture is Test {
     /// @dev The Sepolia PoolManager slot the whole campaign etches.
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    /// @dev An address carrying EXACTLY `beforeInitialize | beforeSwap | afterSwap | beforeSwapReturnsDelta`.
-    address constant HOOK_ADDR = 0x91110000000000000000000000000000000020c8;
+    /// @dev An address carrying EXACTLY `beforeInitialize | afterSwap`.
+    address constant HOOK_ADDR = 0x9111000000000000000000000000000000002040;
     /// @dev The SENTINEL the hook artifact is statically linked against (see foundry.toml): the
     ///      fixture etches the GlueLiquidity runtime here, mirroring production where the deploy
     ///      script links the real nonce-0 library address instead.
     address constant LIQ_LIB = 0xb0B0000000000000000000000000000000000B0B;
     /// @dev The REAL canonical GlueStick address (the hook's compile-time constant): the fixture
     ///      etches {MockGlueStick} here, so the Glue burn path runs exactly as in production.
-    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
     /// @dev The chain's canonical wrapped native, as the hook's constructor arg. Only its ADDRESS
     ///      matters to the hook (an equality ban on pot mains), so a bare constant is enough.
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
@@ -79,7 +79,7 @@ abstract contract GlueHookFixture is Test {
     }
 
     /// @dev The hookless twin of {_openEthPool}: identical currencies, fee, spacing, price and
-    ///      liquidity — the differential yardstick the parity tests price the shield against.
+    ///      liquidity — the differential yardstick the parity tests price the hooked pool against.
     function _openTwinPool(address mainToken) internal returns (IPoolManagerMin.PoolKey memory key) {
         key = IPoolManagerMin.PoolKey({
             currency0: ETH, currency1: mainToken, fee: FEE, tickSpacing: SPACING, hooks: address(0)
@@ -168,18 +168,40 @@ abstract contract GlueHookFixture is Test {
         }
     }
 
-    /// @dev The LAST `Shielded` in a recorded window, or `found = false`.
-    function _lastShielded(Vm.Log[] memory logs)
-        internal
-        view
-        returns (bool found, uint256 absorbed, uint256 paid)
-    {
+    /// @dev Σ `Pumped.spent` and Σ `Pumped.bought` over a recorded window.
+    function _sumPumped(Vm.Log[] memory logs) internal view returns (uint256 spent, uint256 bought) {
         for (uint256 i; i < logs.length; ++i) {
             if (logs[i].emitter != address(pump)) continue;
-            if (logs[i].topics[0] != keccak256("Shielded(bytes32,uint256,uint256)")) continue;
-            found = true;
-            (absorbed, paid) = abi.decode(logs[i].data, (uint256, uint256));
+            if (logs[i].topics[0] != keccak256("Pumped(bytes32,uint256,uint256)")) continue;
+            (uint256 s, uint256 b) = abi.decode(logs[i].data, (uint256, uint256));
+            spent += s;
+            bought += b;
         }
+    }
+
+    /// @dev Let the spend bucket REFILL: a new block one full {GlueHook.PUMP_REFILL} later, so the
+    ///      next pump may draw a whole fee ceiling again. Tests that want two full-size pumps in a
+    ///      row call this between them — inside one block the bucket is what a second pump runs into.
+    function _refill() internal {
+        vm.warp(block.timestamp + uint256(pump.PUMP_REFILL()));
+        vm.roll(block.number + 1);
+    }
+
+    /// @dev Let the reference SETTLE on the pool's current tick: advance time past several time
+    ///      constants and touch the pool with a dust trade in the new block so the observation is
+    ///      recorded. Tests that want the gate fully open at the live price call this after moving
+    ///      the price.
+    function _settleReference(IPoolManagerMin.PoolKey memory key) internal {
+        // First block: the observation weights the tick that stood (the current one) fully
+        vm.warp(block.timestamp + 6 * uint256(pump.REFERENCE_TAU()));
+        vm.roll(block.number + 1);
+        helper.swap(key, true, -1);
+        // Second block: the dust trade's own tick (the same, to a wei) is absorbed too
+        vm.warp(block.timestamp + 6 * uint256(pump.REFERENCE_TAU()));
+        vm.roll(block.number + 1);
+        helper.swap(key, true, -1);
+        vm.warp(block.timestamp + 6 * uint256(pump.REFERENCE_TAU()));
+        vm.roll(block.number + 1);
     }
 
     /// @dev The PoolManager's runtime bytecode out of the fixture module (its only quoted string).

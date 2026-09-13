@@ -8,29 +8,31 @@ import {IGlueHook} from "../contracts/interfaces/IGlueHook.sol";
 import {GluedV4Core, IPoolManagerMin} from "../contracts/libs/GluedV4Core.sol";
 import {V4PoolHelper} from "./helpers/V4PoolHelper.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
+import {MockGlueStick} from "./mocks/MockGlueStick.sol";
+import {MockHookedEngine} from "./mocks/MockHookedEngine.sol";
 import {GlueHookHandler} from "./handlers/GlueHookHandler.sol";
 
 /**
  * @title  GlueHookProgramInvariant — the stateful campaign with the LP PROGRAM ARMED.
- * @notice {GlueHookInvariant} fuzzes the pot's two mechanics over a bare pool. This campaign runs the
- *         SAME random walk — donations, buys, sells in both modes, arbitrary order — over a pool whose
+ * @notice {GlueHookInvariant} fuzzes the pump over a bare pool. This campaign runs the SAME random
+ *         walk — donations, buys, sells in both modes, time skips, arbitrary order — over a pool whose
  *         LP program is live and armed for in-swap auto-harvest with every split leg switched on at
  *         once: a compound share (with its CARRY), a buyback share fuelling the pot mid-walk, a burn
  *         share walking the cascade, and live per-side recipients being pushed real money inside the
  *         swaps. Everything the program does happens INSIDE the swaps the fuzzer throws, interleaved
- *         with pumps and shields in the same frames — which is exactly where a bookkeeping slip
+ *         with pumps behind buys and sells in the same frames — which is exactly where a bookkeeping slip
  *         between the four ledgers (pot, carry, owed, parked/held) would hide from unit tests.
  *
  *   PI1 ETH SOLVENCY        the hook's ETH balance covers `obligationOf(ETH)` — pots + carry + owed
  *   PI2 TOKEN SOLVENCY      the hook's token balance covers `obligationOf(token)`
  *   PI3 MAIN ATTRIBUTED     every unit of main on the hook is parked, held, carried, or owed — sharper
  *                           than PP5 because the program adds two new ways to hold main
- *   PI4 POT CONSERVATION    pot + Σ shield payouts + Σ pump spends == Σ donations + Σ harvest fuel:
+ *   PI4 POT CONSERVATION    pot + Σ pump spends == Σ donations + Σ harvest fuel:
  *                           the harvest's buyback leg is a REAL pot inflow and the identity still
  *                           closes exactly
- *   PI5 DELIVERY IDENTITY   Σ main acquired (pump + shield + harvest burn legs) == Σ main delivered
- *                           (dead + parked + held + the buyback split's compound credits)
- *                           (dead + parked + held) — the burn cascade loses nothing under load
+ *   PI5 DELIVERY IDENTITY   Σ main acquired (pumps + harvest burn legs) == Σ main delivered
+ *                           (dead + parked + held + the buyback split's compound credits) — the
+ *                           burn cascade loses nothing under load
  *   PI6 LIQUIDITY MONOTONE  the program's liquidity NEVER decreases: nobody removes, so the armed
  *                           auto-compound may only grow the position or stand still
  *
@@ -43,9 +45,9 @@ import {GlueHookHandler} from "./handlers/GlueHookHandler.sol";
  */
 contract GlueHookProgramInvariant is StdInvariant, Test {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    address constant HOOK_ADDR = 0x91110000000000000000000000000000000020c8;
+    address constant HOOK_ADDR = 0x9111000000000000000000000000000000002040;
     /// @dev The REAL canonical GlueStick address (the hook's compile-time constant).
-    address constant GLUE_STICK = 0xdac0cbf141E6270C5De6Dd2d6532992562810b38;
+    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
     /// @dev The chain's canonical wrapped native, as the hook's constructor arg.
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
@@ -116,11 +118,12 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
 
         handler = new GlueHookHandler(pump, token, helper, key);
 
-        bytes4[] memory sel = new bytes4[](4);
+        bytes4[] memory sel = new bytes4[](5);
         sel[0] = GlueHookHandler.donate.selector;
         sel[1] = GlueHookHandler.buy.selector;
         sel[2] = GlueHookHandler.sell.selector;
         sel[3] = GlueHookHandler.sellExactOut.selector;
+        sel[4] = GlueHookHandler.passTime.selector;
         targetSelector(FuzzSelector({addr: address(handler), selectors: sel}));
         targetContract(address(handler));
     }
@@ -175,21 +178,21 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
     }
 
     // PI4 — the pot's ledger closes exactly with the harvest fuel counted as an inflow: donations and
-    // buyback legs in, shield payouts and pump spends out, the rest still sitting in the pot.
+    // buyback legs in, pump spends out, the rest still sitting in the pot.
     function invariant_PI4_potConservation() public view {
         assertEq(
-            handler.potBalance() + handler.ghostShieldPaid() + handler.ghostPumpSpent(),
+            handler.potBalance() + handler.ghostPumpSpent(),
             handler.ghostDonated() + handler.ghostFueled(),
-            "PI4: pot + payouts + spends != donations + fuel"
+            "PI4: pot + spends != donations + fuel"
         );
     }
 
-    // PI5 — delivery identity under program load: everything the pump bought, the shield absorbed and
-    // the harvests burned is at dead, parked, held, or was credited to the compound carry by the
+    // PI5 — delivery identity under program load: everything the pumps bought and the harvests
+    // burned is at dead, parked, held, or was credited to the compound carry by the
     // BUYBACK SPLIT (this campaign runs a live 25%/25% pot split, so the compound leg is a real
     // term). The cascade loses nothing when it runs inside the same frames as harvests and compounds.
     function invariant_PI5_deliveryIdentity() public view {
-        uint256 acquired = handler.ghostPumpBought() + handler.ghostAbsorbed() + handler.ghostBurned();
+        uint256 acquired = handler.ghostPumpBought() + handler.ghostBurned();
         uint256 delivered = token.balanceOf(DEAD) + pump.parkedOf(address(token))
             + pump.heldOf(address(token)) + handler.ghostPotCompounded();
         assertEq(delivered, acquired, "PI5: acquired main != delivered main");
@@ -207,12 +210,10 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
     ///         harvests, compounds (liquidity strictly above seed), pot fuel, burn legs, and real
     ///         recipient pushes — so the invariants above are asserted over a loaded world.
     function test_coverage_programMechanismsLand() public {
-        // A modest pot, deliberately smaller than the big sell below: a fully-shielded sell never
-        // reaches the pool and accrues NO main-side LP fees, so the burn leg needs a partial absorb
         handler.donate(0, 10 ether);
         // Round trips: each swap accrues fees and the NEXT one auto-harvests them (mins are 1 wei)
         handler.buy(5 ether);
-        handler.sell(60_000e18); // outsizes the pot -> the pool takes the remainder -> main fees
+        handler.sell(60_000e18); // a big sell: main-side fees for the burn leg, a pump behind it
         handler.buy(4 ether);
         handler.sell(2_000e18);
         handler.buy(3 ether);
@@ -223,8 +224,8 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
         assertGt(pump.programOf(poolId).liquidity, SEED_LIQ, "the auto-compound grew the position");
         assertGt(carol.balance, 0, "the secondary recipient was paid inside the swaps");
         assertGt(token.balanceOf(dave), 0, "and the main recipient too");
-        assertGt(handler.pumps(), 0, "pumps still fire alongside the program");
-        assertGt(handler.shields(), 0, "and shields too");
+        assertGt(handler.buyPumps(), 0, "pumps still fire behind buys alongside the program");
+        assertGt(handler.sellPumps(), 0, "and behind sells");
         assertGt(handler.ghostPotCompounded(), 0, "the buyback split's compound leg really fired");
 
         invariant_PI1_ethSolvency();
@@ -233,5 +234,192 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
         invariant_PI4_potConservation();
         invariant_PI5_deliveryIdentity();
         invariant_PI6_liquidityMonotone();
+    }
+}
+
+/**
+ * @title  GlueHookNativeProgramInvariant — the SAME armed walk over a NATIVE program.
+ * @notice The program is launched by a registered Glue LP engine (a recording mock), so every
+ *         in-swap auto-harvest the fuzzer provokes pushes the remainder legs to the engine, advances
+ *         the DELIVERED ledger and fires `recordHarvest`. The engine receives nothing else in this
+ *         world (the pot recipient is the burn, nobody removes liquidity), which makes the ledger's
+ *         exactly-once claim directly checkable against balances:
+ *
+ *   PN1 LEDGER == LANDED     `deliveredCumOf(pool, asset)` equals the engine's cumulative balance
+ *                            delta in that asset, to the wei, on both assets — the ledger counts
+ *                            exactly what the engine received from harvests, never gross, never a
+ *                            booked-owed leg
+ *   PN2 RECORDED == LEDGER   the engine's own `recordHarvest` sums equal the ledger: with a
+ *                            well-behaved engine the callback path attributes everything and a
+ *                            reconcile would credit ZERO — callback and reconcile never overlap
+ *   PN3 LEDGER MONOTONIC     the ledger never decreases between two observations
+ *   PN4 SOLVENCY             the hook's ETH and token balances cover its obligations under the
+ *                            native load (the report changes no delivery)
+ *
+ * Plus a deterministic anti-vacuity walk proving the callbacks really fired with real value.
+ */
+contract GlueHookNativeProgramInvariant is StdInvariant, Test {
+    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
+    address constant HOOK_ADDR = 0x9111000000000000000000000000000000002040;
+    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
+    address constant ETH = address(0);
+    uint24 constant FEE = 3000;
+    int24 constant SPACING = 120;
+    int24 constant TICK_LO = -887160;
+    int24 constant TICK_HI = 887160;
+    uint160 constant LAUNCH_SQRT = 2505413655765166104291548792414;
+    uint128 constant SEED_LIQ = 1e21;
+
+    GlueHook pump;
+    MockERC20 token;
+    V4PoolHelper helper;
+    GlueHookHandler handler;
+    MockHookedEngine engine;
+    bytes32 poolId;
+    uint256 ethBase;
+    uint256 tokBase;
+    uint256 lastLedgerEth;
+    uint256 lastLedgerTok;
+
+    receive() external payable {}
+
+    function setUp() public {
+        vm.etch(POOL_MANAGER, _poolManagerRuntime());
+        vm.etch(0xb0B0000000000000000000000000000000000B0B, vm.getDeployedCode("GlueLiquidity.sol:GlueLiquidity"));
+        deployCodeTo("MockGlueStick.sol:MockGlueStick", "", GLUE_STICK);
+        deployCodeTo("GlueHook.sol:GlueHook", abi.encode(POOL_MANAGER, NATIVEWRAP), HOOK_ADDR);
+        pump = GlueHook(payable(HOOK_ADDR));
+
+        token = new MockERC20("NativeMain", "NMN", 18);
+        helper = new V4PoolHelper(POOL_MANAGER);
+        engine = new MockHookedEngine(pump);
+        MockGlueStick(GLUE_STICK).setRegisteredEngine(address(engine), true);
+
+        vm.deal(address(engine), 1_000 ether);
+        vm.deal(address(helper), 5_000 ether);
+        token.mint(address(engine), 10_000_000e18);
+        token.mint(address(helper), 20_000_000e18);
+        engine.exec(address(token), abi.encodeCall(token.approve, (address(pump), type(uint256).max)));
+
+        // The ENGINE launches: pot admin, program owner, both recipients (by the stamp), every leg
+        // armed exactly as in the plain campaign
+        IPoolManagerMin.PoolKey memory key = _key();
+        poolId = keccak256(abi.encode(key));
+        engine.exec{value: 100 ether}(
+            address(pump),
+            abi.encodeCall(
+                IGlueHook.launchPool,
+                (
+                    key, LAUNCH_SQRT, address(token), address(0), TICK_LO, TICK_HI, SEED_LIQ, address(engine),
+                    IGlueHook.ProgramConfig({
+                        buybackShareWad: uint64(3e17),
+                        burnShareWad: uint64(3e17),
+                        compoundShareWad: uint64(4e17),
+                        potCompoundShareWad: uint64(25e16),
+                        potBurnShareWad: uint64(25e16),
+                        publicHarvest: true,
+                        secondaryRecipient: address(engine),
+                        mainRecipient: address(engine),
+                        minMain: 1,
+                        minSecondary: 1
+                    })
+                )
+            )
+        );
+        require(pump.programOf(poolId).native, "the program must be native for this campaign");
+        helper.addLiquidity(key, TICK_LO, TICK_HI, _launchLiquidity());
+        // Baselines AFTER the launch (the seed's refund landed on the engine)
+        ethBase = address(engine).balance;
+        tokBase = token.balanceOf(address(engine));
+
+        handler = new GlueHookHandler(pump, token, helper, key);
+        bytes4[] memory sel = new bytes4[](5);
+        sel[0] = GlueHookHandler.donate.selector;
+        sel[1] = GlueHookHandler.buy.selector;
+        sel[2] = GlueHookHandler.sell.selector;
+        sel[3] = GlueHookHandler.sellExactOut.selector;
+        sel[4] = GlueHookHandler.passTime.selector;
+        targetSelector(FuzzSelector({addr: address(handler), selectors: sel}));
+        targetContract(address(handler));
+    }
+
+    function _key() internal view returns (IPoolManagerMin.PoolKey memory k) {
+        k = IPoolManagerMin.PoolKey({
+            currency0: ETH, currency1: address(token), fee: FEE, tickSpacing: SPACING, hooks: HOOK_ADDR
+        });
+    }
+
+    function _launchLiquidity() internal pure returns (uint128) {
+        uint256 l0 = (100e18 * uint256(LAUNCH_SQRT)) / GluedV4Core.Q96;
+        uint256 l1 = (100_000e18 * GluedV4Core.Q96) / (LAUNCH_SQRT - GluedV4Core.MIN_SQRT_RATIO);
+        return uint128(l0 < l1 ? l0 : l1);
+    }
+
+    function _poolManagerRuntime() internal view returns (bytes memory) {
+        string[] memory parts = vm.split(vm.readFile("test/fixtures/v4PoolManagerBytecode.ts"), "\"");
+        require(parts.length >= 2, "pm bytecode fixture");
+        return vm.parseBytes(parts[1]);
+    }
+
+    // ── INVARIANTS ──────────────────────────────────────────────────────────────────────────────
+
+    // PN1 — the ledger IS what landed: the engine's balance grew by exactly the ledger, per asset.
+    function invariant_PN1_ledgerEqualsLanded() public view {
+        assertEq(pump.deliveredCumOf(poolId, ETH), address(engine).balance - ethBase, "PN1: ETH ledger != landed");
+        assertEq(
+            pump.deliveredCumOf(poolId, address(token)), token.balanceOf(address(engine)) - tokBase,
+            "PN1: token ledger != landed"
+        );
+    }
+
+    // PN2 — with a well-behaved engine the callback attributed everything: recorded == ledger, so
+    // a reconcile against the ledger credits nothing (callback and reconcile are exclusive).
+    function invariant_PN2_recordedEqualsLedger() public view {
+        assertEq(engine.cumSec(), pump.deliveredCumOf(poolId, ETH), "PN2: recorded ETH != ledger");
+        assertEq(engine.cumMain(), pump.deliveredCumOf(poolId, address(token)), "PN2: recorded token != ledger");
+    }
+
+    // PN3 — the ledger never decreases between two observations.
+    function invariant_PN3_ledgerMonotonic() public {
+        uint256 e = pump.deliveredCumOf(poolId, ETH);
+        uint256 t = pump.deliveredCumOf(poolId, address(token));
+        assertGe(e, lastLedgerEth, "PN3: ETH ledger decreased");
+        assertGe(t, lastLedgerTok, "PN3: token ledger decreased");
+        lastLedgerEth = e;
+        lastLedgerTok = t;
+    }
+
+    // PN4 — solvency under native load.
+    function invariant_PN4_solvency() public view {
+        assertGe(address(pump).balance, pump.obligationOf(ETH), "PN4: ETH balance < obligation");
+        assertGe(token.balanceOf(address(pump)), pump.obligationOf(address(token)), "PN4: token balance < obligation");
+    }
+
+    // ── ANTI-VACUITY ────────────────────────────────────────────────────────────────────────────
+
+    /// @notice Drive the walk deterministically: the in-swap harvests fired, every one reported, the
+    ///         engine received real value on both sides, and the four invariants hold on the loaded
+    ///         world.
+    function test_coverage_nativeReportsLand() public {
+        handler.donate(0, 10 ether);
+        handler.buy(5 ether);
+        handler.sell(60_000e18);
+        handler.buy(4 ether);
+        handler.sell(2_000e18);
+        handler.buy(3 ether);
+
+        assertGt(handler.harvests(), 0, "auto-harvests fired inside the fuzzed swaps");
+        assertEq(engine.calls(), handler.harvests(), "every harvest reported exactly once");
+        assertGt(engine.cumSec(), 0, "real ETH reached the engine");
+        assertGt(engine.cumMain(), 0, "and real main");
+        assertEq(engine.lastSender(), address(pump), "from the hook");
+        assertEq(engine.lastPoolId(), poolId, "for this pool");
+
+        invariant_PN1_ledgerEqualsLanded();
+        invariant_PN2_recordedEqualsLedger();
+        invariant_PN3_ledgerMonotonic();
+        invariant_PN4_solvency();
+        assertGt(lastLedgerEth, 0, "the monotonic cursor observed real value");
     }
 }

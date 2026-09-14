@@ -75,25 +75,25 @@ const FEATURES: Feature[] = [
     visual: <PumpVisual />,
   },
   {
-    kicker: "03 · side two — defense",
+    kicker: "03 · side two — the dip",
     title: (
       <>
-        The same pot <span className="grad-text">absorbs the sells</span>.
+        The same pot <span className="grad-text">buys the dip</span>.
       </>
     ),
     body: (
       <>
-        When someone sells, the pot can step in and buy that sell itself — at
-        exactly the price the pool would have paid, so the seller loses nothing.
-        The difference: the pool&apos;s price <b className="text-txt">doesn&apos;t
-        move</b>. Red candles get eaten. And since the pot bought the tokens, they
-        go to the same place as the buybacks — including the burn.
+        When someone sells, the pot can buy more of your token in that same
+        trade — a standing buy order riding real supply. The seller still hits
+        the curve; the pot is gated so it cannot be farmed: a 10-minute EMA,
+        a volume-paced bucket, and a share of at most 60%. Bought tokens go
+        to the same place as the buybacks — including the burn.
       </>
     ),
     bullets: [
-      "sells are absorbed at the pool's exact price — zero seller friction",
-      "the chart doesn't drop for what the pot absorbs",
-      "one pot, two directions: it pumps the buys and cushions the sells",
+      "every swap can unlock a buyback — buys amplify, sells refill",
+      "a 10-minute EMA and a k=4 bucket keep the pot unplayable",
+      "one pot, one pump: it spends secondary on main, never the other way",
     ],
     visual: <ShieldVisual />,
   },
@@ -130,7 +130,7 @@ const FEATURES: Feature[] = [
     body: (
       <>
         This is the part that makes it magic: there is no crank to turn. The
-        buybacks, the burns, the defense, the compounding, the fee collection —
+        buybacks, the burns, the compounding, the fee collection —
         all of it runs <b className="text-txt">inside the swaps themselves</b>, as
         people trade. You set the rules once; the market executes them forever.
       </>
@@ -373,7 +373,7 @@ export default function Landing() {
                   </h2>
                   <p className="mt-4 flex-1 text-[15.5px] leading-relaxed text-dim">
                     Add liquidity through the hook and switch the machine on:
-                    buybacks, burns, sell defense and self-compounding fees —
+                    buybacks, burns and self-compounding fees —
                     your pool, your rules, running by itself from the first
                     trade.
                   </p>
@@ -397,8 +397,8 @@ export default function Landing() {
                   <p className="mt-4 flex-1 text-[15.5px] leading-relaxed text-dim">
                     Launchpads, token factories, treasury managers, trading apps:
                     create hooked pools straight from your own contracts and ship
-                    products where every token launches with buybacks, sell
-                    defense and self-growing liquidity built in — same address on
+                    products where every token launches with buybacks and
+                    self-growing liquidity built in — same address on
                     all 18 chains, nothing to deploy, nothing to pay.
                   </p>
                   <div className="mt-8">
@@ -460,7 +460,7 @@ function StoryBothSides() {
       </path>
       {/* divider */}
       <line x1={110} y1={14} x2={110} y2={90} stroke="var(--line)" strokeWidth="1.5" strokeDasharray="3 5" />
-      {/* down side: red sell absorbed by blue shield */}
+      {/* down side: red sell + blue pump-the-dip */}
       <rect x={132} y={30} width={10} height={26} rx={2} fill="#e23a3a" opacity={0.8}>
         <animate attributeName="opacity" values=".8;.25;.8" dur="2.2s" repeatCount="indefinite" />
       </rect>

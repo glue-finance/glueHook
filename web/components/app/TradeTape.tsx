@@ -12,6 +12,7 @@ const STYLE: Record<string, { color: string; label: string }> = {
   Shielded: { color: "#00987f", label: "SHIELD" },
   Donated: { color: "#7ab800", label: "DONATE" },
   Harvested: { color: "#cf9700", label: "HARVEST" },
+  HarvestRecorded: { color: "#7c5cbf", label: "RECORDED" },
   Compounded: { color: "#fe0087", label: "COMPOUND" },
   ProgramLiquidityAdded: { color: "#a5b6a1", label: "LP+" },
   ProgramLiquidityRemoved: { color: "#e23a3a", label: "LP−" },
@@ -34,6 +35,7 @@ const EXPLAIN: Record<string, string> = {
   SHIELD: "the pot absorbed part of a sell at the pool's own price, so less sell pressure ever reaches the pool",
   DONATE: "someone sent secondary straight into the pot — anyone can fuel the buyback firepower",
   HARVEST: "the program's accrued LP fees were collected and split by the pool's own rules (compound, burn, buyback, recipient)",
+  RECORDED: "a native Glue engine was told what this harvest delivered — the engine's exactly-once reconcile cursor",
   COMPOUND: "collected fees were re-minted into the pool's own liquidity — the position grows itself",
   BURNED: "main removed from circulation forever through the burn cascade (own burn, 0xdead, or held on the hook with no exit)",
   CARRY: "buyback output credited to the compound carry — it becomes the pool's own liquidity at the next harvest",
@@ -65,6 +67,8 @@ function describe(e: PoolEvent, main?: TokenMeta, sec?: TokenMeta): string {
       return `${short(e.data.donor ?? "")} donated ${S(e.data.amount, sec)} ${sec?.symbol ?? ""}`;
     case "Harvested":
       return `fees ${S(e.data.mainFees, main)}/${S(e.data.secondaryFees, sec)} · fueled ${S(e.data.fueled, sec)} · burned ${S(e.data.burned, main)}`;
+    case "HarvestRecorded":
+      return `${e.data.recorded === "true" ? "engine recorded" : "engine missed"} ${S(e.data.deliveredMain, main)}/${S(e.data.deliveredSec, sec)} → ${short(e.data.engine ?? "")}`;
     case "Compounded":
       return `+${ftoken(BigInt(e.data.liquidity ?? "0"), 0)} liquidity re-minted from fees`;
     case "ProgramLiquidityAdded":
@@ -114,7 +118,7 @@ export function TradeTape({
       <div className="max-h-[340px] overflow-y-auto p-2">
         {items.length === 0 && (
           <div className="mono py-10 text-center text-[12px] text-dim2">
-            {loading ? "scanning…" : "no activity yet — every pump, shield, donation and harvest lands here"}
+            {loading ? "scanning…" : "no activity yet — every pump, donation and harvest lands here"}
           </div>
         )}
         {items.map((e) => {

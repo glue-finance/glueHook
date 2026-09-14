@@ -8,7 +8,7 @@ const jbmono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jbmono" })
 
 const TITLE = "GlueHook — buy back and autocompound your V4 LP";
 const DESCRIPTION =
-  "A free, open-source Uniswap V4 hook that automates buybacks, burns, sell defense and self-compounding liquidity — on-chain, contract-to-contract, no oracles, no keepers, no team actions. Same address on 18 networks.";
+  "A free, open-source Uniswap V4 hook that automates buybacks, burns and self-compounding liquidity — on-chain, contract-to-contract, no oracles, no keepers, no team actions. Same address on 18 networks.";
 
 // maximumScale 1 + userScalable false stop every automatic zoom-on-input-focus
 // (iOS Safari, iOS Chrome, in-app webviews); pinch zoom stays available on iOS
@@ -28,7 +28,7 @@ export const metadata: Metadata = {
   applicationName: "GlueHook",
   keywords: [
     "Uniswap V4 hook", "buyback and burn", "autocompound LP", "auto-harvest fees",
-    "buyback hook", "V4 liquidity", "DeFi buyback", "sell shield", "token burn",
+    "buyback hook", "V4 liquidity", "DeFi buyback", "token burn",
     "GlueHook", "Glue",
   ],
   alternates: { canonical: "/" },
@@ -45,7 +45,7 @@ export const metadata: Metadata = {
     siteName: "GlueHook",
     title: TITLE,
     description:
-      "Automated buybacks, burns, sell defense and self-growing liquidity for any Uniswap V4 pool. No oracles, no keepers, no fee — same address on 18 networks.",
+      "Automated buybacks, burns and self-growing liquidity for any Uniswap V4 pool. No oracles, no keepers, no fee — same address on 18 networks.",
     locale: "en_US",
     images: [
       { url: "/og.png", width: 1200, height: 630, alt: "GlueHook — buy back & autocompound your Uniswap V4 LP" },
@@ -58,7 +58,7 @@ export const metadata: Metadata = {
     creator: "@glue_fi",
     title: TITLE,
     description:
-      "Automated buybacks, burns, sell defense and self-growing liquidity for any Uniswap V4 pool — same address on 18 networks.",
+      "Automated buybacks, burns and self-growing liquidity for any Uniswap V4 pool — same address on 18 networks.",
     images: ["/og.png"],
   },
   robots: {
@@ -101,7 +101,7 @@ const JSON_LD = {
       applicationCategory: "FinanceApplication",
       operatingSystem: "EVM (18 networks)",
       description:
-        "A Uniswap V4 hook that automates buybacks, burns, sell defense, auto-harvesting and self-compounding liquidity for any pool. Deployed at the same canonical address (0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8) on 18 networks, source-verified and open-source.",
+        "A Uniswap V4 hook that automates buybacks, burns, auto-harvesting and self-compounding liquidity for any pool. Deployed at the same canonical address (0xbB021554C5294328b04fa313669715bD201BA040) on 18 networks, source-verified and open-source.",
       offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
       url: "https://gluehook.trade/app",
       softwareHelp: "https://gluehook.trade/docs",

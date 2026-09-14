@@ -294,7 +294,7 @@ export function SimLab({ net }: { net: Net }) {
 
   // monthly firepower: buybacks + sell defense are ONE thing — the pot firing
   const fireBuckets: Bucket[] = useMemo(() => {
-    const fired = monthlySpend(days.map((d) => d.pumped + d.shielded));
+    const fired = monthlySpend(days.map((d) => d.pumped));
     return fired.map((a, i) => ({ t: i + 1, a, b: 0 }));
   }, [days]);
 
@@ -443,7 +443,7 @@ export function SimLab({ net }: { net: Net }) {
           <Group title="the machine">
             <Slide
               label="starting pot"
-              desc="dollars donated into the pot on day one — fuel for buybacks and defense"
+              desc="dollars donated into the pot on day one — fuel for buybacks"
               value={lab.potStart}
               onChange={(v) => set({ potStart: v })}
               min={0}
@@ -489,8 +489,8 @@ export function SimLab({ net }: { net: Net }) {
               </div>
               <div className="mt-1.5 text-[11px] leading-snug text-dim2">
                 {lab.burnOn
-                  ? "the tokens the pot acquires — bought in buybacks and absorbed by the sell defense — are destroyed forever"
-                  : "the tokens the pot acquires — bought in buybacks and absorbed by the sell defense — are delivered to your recipient"}
+                  ? "the tokens the pot acquires — bought behind every swap — are destroyed forever"
+                  : "the tokens the pot acquires — bought behind every swap — are delivered to your recipient"}
               </div>
             </div>
           </Group>
@@ -514,7 +514,7 @@ export function SimLab({ net }: { net: Net }) {
         {/* activity pills — every number is computed by the replay */}
         <div className="flex flex-wrap gap-2">
           <span className="pill pink">
-            pot fired {usdK((last?.pumped ?? 0) + (last?.shielded ?? 0))}
+            pot fired {usdK(last?.pumped ?? 0)}
           </span>
           {(last?.burned ?? 0) > 0 && <span className="pill bad">burned {kfmt(Math.round(last?.burned ?? 0))} TOKEN</span>}
           <span className="pill">
@@ -585,7 +585,7 @@ export function SimLab({ net }: { net: Net }) {
           <div className="p-4">
             <LineChart
               series={[
-                { points: priceSeries, color: HOOK_PINK, fill: true, label: "with the hook — buybacks push, the defense holds the dumps" },
+                { points: priceSeries, color: HOOK_PINK, fill: true, label: "with the hook — buybacks behind every swap" },
                 { points: priceBaseSeries, color: BASE_BLUE, fill: false, label: "the same market, plain pool — it chases the scenario as far as the circulating supply allows" },
               ]}
               height={190}
@@ -634,7 +634,7 @@ export function SimLab({ net }: { net: Net }) {
 
         <div className="panel">
           <div className="chead">
-            <span>pot fired per month — buybacks + sell defense (USD)</span>
+            <span>pot fired per month — buybacks (USD)</span>
           </div>
           <div className="p-4">
             <BarChart
@@ -681,7 +681,7 @@ export function SimLab({ net }: { net: Net }) {
             <div className="chead">
               <span>TOKEN burned — cumulative</span>
               <span className="mono text-[10px] normal-case tracking-normal text-dim2">
-                {lab.burnOn ? "pot buys + defense absorbs" : ""}{lab.burnOn && lab.burnPct > 0 ? " + " : ""}{lab.burnPct > 0 ? `${lab.burnPct}% of TOKEN fees` : ""}
+                {lab.burnOn ? "pot buybacks" : ""}{lab.burnOn && lab.burnPct > 0 ? " + " : ""}{lab.burnPct > 0 ? `${lab.burnPct}% of TOKEN fees` : ""}
               </span>
             </div>
             <div className="p-4">
@@ -702,8 +702,8 @@ export function SimLab({ net }: { net: Net }) {
           aggressive target — exactly like on-chain). every trade executes as
           a REAL swap with real price impact: fees accrue on the gross volume
           → every trade harvests → the split compounds, refuels the pot
-          {lab.burnOn ? " and burns" : ""} → the pot buys back alongside buys
-          and absorbs sell flow at the pool&apos;s exact execution price.
+          {lab.burnOn ? " and burns" : ""} → the pot buys back behind every swap,
+          gated by a 10-minute EMA and a volume-paced bucket.
           without the hook, fees are never re-invested and there is no pot.
           {" "}usd via {usdPx !== null ? "coingecko live" : "a fallback rate"} (1 {cur.sym} = ${fnum(px)}).
         </p>

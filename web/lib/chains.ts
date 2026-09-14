@@ -64,17 +64,20 @@ export const robinhoodTestnet = defineChain({
 // Registry — one entry per deployed network
 // ---------------------------------------------------------------------------
 
-export const CANONICAL_HOOK = "0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8" as const;
-export const CANONICAL_LIB = "0x74EcCF857176CB538AAB1642A972444857f7860F" as const;
+export const CANONICAL_HOOK = "0xbB021554C5294328b04fa313669715bD201BA040" as const;
+export const CANONICAL_LIB = "0xFAc051590a9F2c2AC4838c88F5754591Df194bc5" as const;
 
-/**
- * The FIRST hook deployment (V1) — live on every network with real pools and
- * volume. New pools are created on the canonical (V2) hook only, but V1 pools
- * keep showing and working in the app: scans cover both hooks, and every
- * per-pool read/write routes through the pool's OWN hook (`key.hooks` — it is
- * part of the pool's identity, so the two deployments can never be confused).
- */
+/** Live V2 — still served, no new pools. Permission bits 0x20C8. */
+export const V2_HOOK = "0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8" as const;
+/** Live V1 — still served, no new pools. Permission bits 0x20C8. */
 export const V1_HOOK = "0xb216070c3509047ea597E2E626A29cea427a60C8" as const;
+
+export type GenerationTag = "v1" | "v2" | "v3";
+export type Generation = {
+  tag: GenerationTag;
+  hook: `0x${string}`;
+  deployBlock: number;
+};
 
 export type Net = {
   chain: Chain;
@@ -90,14 +93,15 @@ export type Net = {
   rpcs: string[];
   hook: `0x${string}`;
   poolManager: `0x${string}`;
-  /** block the (current) hook was deployed at — log scans never look earlier */
+  /** block the canonical (V3) hook was deployed at */
   deployBlock: number;
   /**
-   * Earlier hook deployment still served by the app (pools show, reads and
-   * writes route through it via the pool's own `key.hooks`). Scans start from
-   * ITS deploy block and watch both addresses. New pools never land here.
+   * Earlier hook deployments still served by the app (pools show, reads and
+   * writes route through them via the pool's own `key.hooks`). Scans start
+   * from the earliest deploy block and watch every address. New pools never
+   * land here.
    */
-  legacy?: { hook: `0x${string}`; deployBlock: number };
+  legacy: Generation[];
   explorer: string;
   /** Uniswap Universal Router (V4_SWAP entry) — absent = no swap UI on this net */
   universalRouter?: `0x${string}`;
@@ -134,6 +138,17 @@ function rpcsFor(chainId: number, ...urls: string[]): string[] {
   return urls;
 }
 
+/** V3 deploy block + V2/V1 legacy entries (today's deployBlock becomes V2). */
+function gens(v3: number, v2: number, v1: number): { deployBlock: number; legacy: Generation[] } {
+  return {
+    deployBlock: v3,
+    legacy: [
+      { tag: "v2", hook: V2_HOOK, deployBlock: v2 },
+      { tag: "v1", hook: V1_HOOK, deployBlock: v1 },
+    ],
+  };
+}
+
 export const NETS: Net[] = [
   {
     chain: mainnet, slug: "ethereum", label: "Ethereum", testnet: false,
@@ -141,7 +156,7 @@ export const NETS: Net[] = [
     // 50 blocks and single-flights them — read fallback only, so it goes last
     rpcs: rpcsFor(1, "https://gateway.tenderly.co/public/mainnet", "https://rpc.mevblocker.io", "https://eth.drpc.org", "https://ethereum-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0x000000000004444c5dc75cB358380D2e3dE08A90",
-    deployBlock: 25814686, legacy: { hook: V1_HOOK, deployBlock: 25703029 },
+    ...gens(25970820, 25814686, 25703029),
     explorer: "https://etherscan.io",
     universalRouter: "0x66a9893cc07d91d95644aedd05d03f95e1dba8af",
     logRange: 50_000,
@@ -151,7 +166,7 @@ export const NETS: Net[] = [
     // base.org + drpc 10k; publicnode caps Base getLogs at 50 blocks — last
     rpcs: rpcsFor(8453, "https://mainnet.base.org", "https://base.drpc.org", "https://base-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0x498581fF718922c3f8e6A244956aF099B2652b2b",
-    deployBlock: 50330047, legacy: { hook: V1_HOOK, deployBlock: 49657824 },
+    ...gens(51268603, 50330047, 49657824),
     explorer: "https://basescan.org",
     universalRouter: "0x6ff5693b99212da76ad316178a184ab56d299b43",
     logRange: 10_000,
@@ -166,7 +181,7 @@ export const NETS: Net[] = [
     // through the wallet, never through this list.)
     rpcs: rpcsFor(130, "https://unichain.drpc.org", "https://mainnet.unichain.org"),
     hook: CANONICAL_HOOK, poolManager: "0x1F98400000000000000000000000000000000004",
-    deployBlock: 56701906, legacy: { hook: V1_HOOK, deployBlock: 55356883 },
+    ...gens(58586531, 56701906, 55356883),
     explorer: "https://uniscan.xyz",
     universalRouter: "0xef740bf23acae26f6492b10de645d6b98dc8eaf3",
     logRange: 10_000,
@@ -177,7 +192,7 @@ export const NETS: Net[] = [
     // arb1 50k; drpc 500; publicnode caps Arbitrum getLogs at 50 blocks — last
     rpcs: rpcsFor(42161, "https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org", "https://arbitrum-one-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
-    deployBlock: 497395639, legacy: { hook: V1_HOOK, deployBlock: 492046075 },
+    ...gens(504870398, 497395639, 492046075),
     explorer: "https://arbiscan.io",
     universalRouter: "0xa51afafe0263b40edaef0df8781ea9aa03e381a3",
     logRange: 50_000,
@@ -187,7 +202,7 @@ export const NETS: Net[] = [
     // publicnode first (50k here); mainnet.optimism.io rate-limits under scan load
     rpcs: rpcsFor(10, "https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io", "https://optimism.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x9a13F98Cb987694C9F086b1F5eB990EeA8264Ec3",
-    deployBlock: 155925598, legacy: { hook: V1_HOOK, deployBlock: 155253116 },
+    ...gens(156867928, 155925598, 155253116),
     explorer: "https://optimistic.etherscan.io",
     universalRouter: "0x851116d9223fabed8e56c0e6b8ad0c31d98b3507",
     logRange: 50_000,
@@ -204,7 +219,7 @@ export const NETS: Net[] = [
     // private NEXT_PUBLIC_RPC_56 is worth setting here more than anywhere.
     rpcs: rpcsFor(56, "https://bsc-mainnet.nodereal.io/v1/64a9df0874fb4a93b9d0a3849de012d3", "https://rpc-bsc.48.club", "https://0.48.club", "https://56.rpc.thirdweb.com", "https://bsc-rpc.publicnode.com", "https://bsc-dataseed.bnbchain.org"),
     hook: CANONICAL_HOOK, poolManager: "0x28e2Ea090877bF75740558f6BFB36A5ffeE9e9dF",
-    deployBlock: 117531972, legacy: { hook: V1_HOOK, deployBlock: 114546905 },
+    ...gens(121722433, 117531972, 114546905),
     explorer: "https://bscscan.com",
     universalRouter: "0x1906c1d672b88cd1b9ac7593301ca990f94eae07",
     logRange: 50_000,
@@ -214,7 +229,7 @@ export const NETS: Net[] = [
     // publicnode 10k, drpc 100. polygon-rpc.com is GONE (401 "tenant disabled")
     rpcs: rpcsFor(137, "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x67366782805870060151383F4BbFF9daB53e5cD6",
-    deployBlock: 92496642, legacy: { hook: V1_HOOK, deployBlock: 91600016 },
+    ...gens(93755100, 92496642, 91600016),
     explorer: "https://polygonscan.com",
     universalRouter: "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
     logRange: 10_000,
@@ -227,7 +242,7 @@ export const NETS: Net[] = [
     // The alchemy public gateway caps at 100.
     rpcs: rpcsFor(480, "https://worldchain-mainnet.gateway.tenderly.co", "https://worldchain.drpc.org", "https://worldchain-mainnet.g.alchemy.com/public"),
     hook: CANONICAL_HOOK, poolManager: "0xb1860D529182ac3BC1F51Fa2ABd56662b7D13f33",
-    deployBlock: 34057331, legacy: { hook: V1_HOOK, deployBlock: 33384712 },
+    ...gens(34999751, 34057331, 33384712),
     explorer: "https://worldscan.org",
     universalRouter: "0x8ac7bee993bb44dab564ea4bc9ea67bf9eb5e743",
     logRange: 50_000,
@@ -236,7 +251,7 @@ export const NETS: Net[] = [
     chain: soneium, slug: "soneium", label: "Soneium", testnet: false,
     rpcs: rpcsFor(1868, "https://rpc.soneium.org", "https://soneium.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
-    deployBlock: 27157781, legacy: { hook: V1_HOOK, deployBlock: 26485168 },
+    ...gens(28100347, 27157781, 26485168),
     explorer: "https://soneium.blockscout.com",
     universalRouter: "0x4cded7edf52c8aa5259a54ec6a3ce7c6d2a455df",
     logRange: 50_000,
@@ -245,7 +260,7 @@ export const NETS: Net[] = [
     chain: megaeth, slug: "megaeth", label: "MegaETH", testnet: false,
     rpcs: rpcsFor(4326, "https://mainnet.megaeth.com/rpc"),
     hook: CANONICAL_HOOK, poolManager: "0xaCB7e78fa05D562e0A5D3089ec896D57D057d38E",
-    deployBlock: 24653311, legacy: { hook: V1_HOOK, deployBlock: 23308084 },
+    ...gens(26544307, 24653311, 23308084),
     explorer: "https://megaeth.blockscout.com",
     universalRouter: "0x47837eb80db5908eabba9105626d9b348bea7b02",
     logRange: 50_000,
@@ -254,7 +269,7 @@ export const NETS: Net[] = [
     chain: robinhood, slug: "robinhood", label: "Robinhood", testnet: false,
     rpcs: rpcsFor(4663, "https://rpc.mainnet.chain.robinhood.com"),
     hook: CANONICAL_HOOK, poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
-    deployBlock: 43628009, legacy: { hook: V1_HOOK, deployBlock: 30206983 },
+    ...gens(62244207, 43628009, 30206983),
     explorer: "https://robinscan.io",
     universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
     logRange: 50_000,
@@ -264,7 +279,7 @@ export const NETS: Net[] = [
     // publicnode 50k; the official api caps ranges at 2048
     rpcs: rpcsFor(43114, "https://avalanche-c-chain-rpc.publicnode.com", "https://api.avax.network/ext/bc/C/rpc", "https://avalanche.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x06380C0e0912312B5150364B9DC4542BA0DbBc85",
-    deployBlock: 93461396, legacy: { hook: V1_HOOK, deployBlock: 92242906 },
+    ...gens(95212132, 93461396, 92242906),
     explorer: "https://snowscan.xyz",
     universalRouter: "0x94b75331ae8d42c1b61065089b7d48fe14aa73b7",
     logRange: 50_000,
@@ -274,7 +289,7 @@ export const NETS: Net[] = [
     // drpc 10k; rpc.xlayer.tech caps at 100 — read fallback
     rpcs: rpcsFor(196, "https://xlayer.drpc.org", "https://rpc.xlayer.tech"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
-    deployBlock: 68681331, legacy: { hook: V1_HOOK, deployBlock: 67336132 },
+    ...gens(70567241, 68681331, 67336132),
     explorer: "https://www.oklink.com/x-layer",
     universalRouter: "0xda00ae15d3a71466517129255255db7c0c0956d3",
     logRange: 10_000,
@@ -284,7 +299,7 @@ export const NETS: Net[] = [
     // 1rpc.io/sepolia is exhausted (200 "usage limit reached") — dropped
     rpcs: rpcsFor(11155111, "https://ethereum-sepolia-rpc.publicnode.com"),
     hook: CANONICAL_HOOK, poolManager: "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
-    deployBlock: 11546970, legacy: { hook: V1_HOOK, deployBlock: 11438219 },
+    ...gens(11698789, 11546970, 11438219),
     explorer: "https://sepolia.etherscan.io",
     universalRouter: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b",
     logRange: 50_000,
@@ -294,7 +309,7 @@ export const NETS: Net[] = [
     // publicnode 50k first; sepolia.base.org caps at 2k
     rpcs: rpcsFor(84532, "https://base-sepolia-rpc.publicnode.com", "https://sepolia.base.org", "https://base-sepolia.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408",
-    deployBlock: 45841074, legacy: { hook: V1_HOOK, deployBlock: 45168277 },
+    ...gens(46785161, 45841074, 45168277),
     explorer: "https://sepolia.basescan.org",
     universalRouter: "0x492e6456d9528771018deb9e87ef7750ef184104",
     logRange: 50_000,
@@ -303,7 +318,7 @@ export const NETS: Net[] = [
     chain: unichainSepolia, slug: "unichain-sepolia", label: "Unichain Sepolia", testnet: true,
     rpcs: rpcsFor(1301, "https://unichain-sepolia-rpc.publicnode.com", "https://unichain-sepolia.drpc.org", "https://sepolia.unichain.org"),
     hook: CANONICAL_HOOK, poolManager: "0x00B036B58a818B1BC34d502D3fE730Db729e62AC",
-    deployBlock: 60598020, legacy: { hook: V1_HOOK, deployBlock: 59252497 },
+    ...gens(62486439, 60598020, 59252497),
     explorer: "https://sepolia.uniscan.xyz",
     universalRouter: "0xf70536b3bcc1bd1a972dc186a2cf84cc6da6be5d",
     logRange: 50_000,
@@ -312,7 +327,7 @@ export const NETS: Net[] = [
     chain: arbitrumSepolia, slug: "arbitrum-sepolia", label: "Arbitrum Sepolia", testnet: true,
     rpcs: rpcsFor(421614, "https://sepolia-rollup.arbitrum.io/rpc", "https://arbitrum-sepolia-rpc.publicnode.com", "https://arbitrum-sepolia.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317",
-    deployBlock: 301010834, legacy: { hook: V1_HOOK, deployBlock: 295676509 },
+    ...gens(308601376, 301010834, 295676509),
     explorer: "https://sepolia.arbiscan.io",
     universalRouter: "0xefd1d4bd4cf1e86da286bb4cb1b8bced9c10ba47",
     logRange: 50_000,
@@ -321,7 +336,7 @@ export const NETS: Net[] = [
     chain: robinhoodTestnet, slug: "robinhood-testnet", label: "Robinhood Testnet", testnet: true,
     rpcs: rpcsFor(46630, "https://rpc.testnet.chain.robinhood.com"),
     hook: CANONICAL_HOOK, poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
-    deployBlock: 105754223, legacy: { hook: V1_HOOK, deployBlock: 97982800 },
+    ...gens(118984924, 105754223, 97982800),
     explorer: "https://explorer.testnet.chain.robinhood.com",
     logRange: 50_000,
   },
@@ -336,6 +351,32 @@ export function netById(chainId: number): Net | undefined {
 
 export function netBySlug(slug: string): Net | undefined {
   return NETS.find((n) => n.slug === slug);
+}
+
+export function hooksOf(net: Net): `0x${string}`[] {
+  return [net.hook, ...net.legacy.map((g) => g.hook)];
+}
+
+export function earliestDeployBlock(net: Net): number {
+  return Math.min(net.deployBlock, ...net.legacy.map((g) => g.deployBlock));
+}
+
+export function generationOf(net: Net, hook: string): Generation {
+  const h = hook.toLowerCase();
+  if (h === net.hook.toLowerCase()) return { tag: "v3", hook: net.hook, deployBlock: net.deployBlock };
+  const hit = net.legacy.find((g) => g.hook.toLowerCase() === h);
+  return hit ?? { tag: "v3", hook: net.hook, deployBlock: net.deployBlock };
+}
+
+export function isCanonicalHook(hook: string): boolean {
+  return hook.toLowerCase() === CANONICAL_HOOK.toLowerCase();
+}
+
+export function tagOfHook(hook: string): GenerationTag {
+  const h = hook.toLowerCase();
+  if (h === V2_HOOK.toLowerCase()) return "v2";
+  if (h === V1_HOOK.toLowerCase()) return "v1";
+  return "v3";
 }
 
 /**

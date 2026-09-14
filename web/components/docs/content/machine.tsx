@@ -12,7 +12,7 @@ export function ThePot() {
       <Lead>
         Every hooked pool declares two roles for its two currencies, and carries one{" "}
         <B>pot</B> — a permissionless war chest that anyone can fuel and that spends itself through
-        the pump and the shield. Until <C>initPot</C> runs, the hook is completely passive on the
+        the pump. Until <C>initPot</C> runs, the hook is completely passive on the
         pool.
       </Lead>
 
@@ -23,9 +23,8 @@ export function ThePot() {
           [
             <B key="m">MAIN</B>,
             <span key="mv">
-              the asset being <B>defended</B>. It is what the pot buys on pumps, what it absorbs on
-              sells, and what the pot&apos;s recipient receives. <C>address(0)</C> as recipient
-              means <B>burn</B>.
+              the asset being <B>defended</B>. It is what the pot buys on every pump, and what the
+              pot&apos;s recipient receives. <C>address(0)</C> as recipient means <B>burn</B>.
             </span>,
           ],
           [
@@ -126,7 +125,7 @@ export function ThePot() {
       <Code title="views">
         <span className="g">potOf</span>(poolId) → Pot{"{"} admin, main, secondary, recipient, configured, balance {"}"}{"\n"}
         <span className="g">quotePump</span>(key, buyIn) → (spend, minOut){"\n"}
-        <span className="g">quoteShield</span>(key, amountSpecified) → (absorbed, paid)
+        <span className="g">pumpShareOf</span>(poolId) → (shareWad, spotTick, referenceTick)
       </Code>
     </>
   );
@@ -187,7 +186,7 @@ export function Donations() {
             title: "Read where the main will go",
             body: (
               <>
-                <C>potOf(poolId).recipient</C> is where every pump&apos;s and shield&apos;s main is
+                <C>potOf(poolId).recipient</C> is where every pump&apos;s main is
                 delivered. <C>address(0)</C> means burn — the trustless shape. A live address means
                 you are trusting whoever the admin points it at, <B>including future re-pointing</B>.
               </>
@@ -274,33 +273,33 @@ export function Pump() {
   return (
     <>
       <Lead>
-        On a SECONDARY → MAIN buy, <C>afterSwap</C> makes the pot buy more main{" "}
-        <B>inside the buyer&apos;s own transaction</B> and hands it to the recipient. The sizing
-        rule is one line — and that one line is the entire anti-sandwich model.
+        Behind <B>every swap</B> — a buy and a sell — <C>afterSwap</C> makes the pot spend
+        secondary on main <B>inside the swapper&apos;s own transaction</B> and hands what it
+        bought to the recipient. The spend is the smallest of four ceilings, then an 80% haircut.
       </Lead>
 
       <Code title="the sizing rule">
-        <span className="c">{"// the slice this buy unlocks"}</span>{"\n"}
-        unlocked = min(pot, fee·depth, the secondary this buy actually paid){"\n"}
-        <span className="c">{"// the safety haircut keeps the spend strictly"}</span>{"\n"}
-        <span className="c">{"// inside the sandwich break-even"}</span>{"\n"}
-        spend{"    "}= unlocked · <span className="l">80%</span>
+        <span className="c">{"// four ceilings, then the sandwich haircut"}</span>{"\n"}
+        unlocked = min(pot, fee·depth, share·demand, bucket){"\n"}
+        spend{"    "}= unlocked · <span className="l">80%</span>{"\n"}
+        <span className="c">{"// share = 60% at or below the 10-min EMA reference,"}</span>{"\n"}
+        <span className="c">{"//          min(60%, f/premium) above it"}</span>
       </Code>
       <P>
         Nothing in that line is hardcoded to a pool shape: <C>fee·depth</C> is computed{" "}
         <B>live</B> as the pool&apos;s current swap fee times its tangent reserve at the live price
         — so a deeper pool or a fatter fee tier earns a proportionally larger pump, automatically.
-        And <C>userIn</C> is the <B>measured</B> secondary leg of the buyer&apos;s own swap delta,
-        not a re-quote — a dust buy can only ever unlock a dust pump, and the pot follows real
-        demand instead of emptying all at once.
+        And <C>demand</C> is the <B>measured</B> secondary the swap actually moved — a dust trade
+        can only ever unlock a dust pump, and the pot follows real volume instead of emptying all
+        at once.
       </P>
 
-      <H2>A buy, step by step</H2>
+      <H2>A swap, step by step</H2>
       <Flow
         items={[
-          { label: "user swaps SECONDARY → MAIN" },
+          { label: "user swaps — a buy of MAIN or a sell of MAIN" },
           { label: "pool executes the user's swap", note: "user pays the pool fee" },
-          { label: "afterSwap: pot spends ≤ 80% of the unlocked slice", hot: true },
+          { label: "afterSwap: pot spends ≤ 80% of the four-ceiling slice", hot: true },
           { label: "pot's MAIN → recipient (or the burn cascade)", hot: true },
         ]}
       />
@@ -324,11 +323,11 @@ export function Pump() {
         The attacker&apos;s size <B>cancels out of the inequality</B> — so one single bound on the
         pump&apos;s spend closes the attack for <B>every attacker size, pot depth and price at
         once</B>. The hook caps the pump at <C>f·R</C> and then takes only 80% of it, putting the
-        realised spend at <C>0.8·f·R</C> — strictly <B>inside</B> the break-even. No cooldown, no
-        per-swap state, no reference price. This is proven at sizes from dust to pool-scale in the
-        test campaign (<C>test_A2</C>), and it is exactly why a <B>zero-fee pool never pumps</B>:
-        with <C>f = 0</C> the ceiling is zero, and the design refuses to host a sandwichable
-        buyback.
+        realised spend at <C>0.8·f·R</C> — strictly <B>inside</B> the break-even. The fee ceiling
+        itself needs no cooldown and no reference; the 10-minute EMA and the volume-paced bucket
+        (next chapter) are extra ceilings on top. This is proven at sizes from dust to pool-scale
+        in the test campaign, and it is exactly why a <B>zero-fee pool never pumps</B>: with{" "}
+        <C>f = 0</C> the ceiling is zero, and the design refuses to host a sandwichable buyback.
       </P>
       <P>
         Intuition for the same thing: forcing a bigger pump requires a bigger real buy, which pays
@@ -379,12 +378,12 @@ export function Pump() {
       </P>
       <Callout tone="info" title="the adjacent surfaces, honestly">
         <p>
-          This bound governs sandwiching <B>the pump itself</B>. Two adjacent surfaces — a third
-          party sandwiching an unrelated victim&apos;s buy, and a self-sandwicher dumping through a
-          partially-absorbing shield — are economically different (bounded, and in every posture
-          the pot still buys its main at fair price). They are written up in full in{" "}
+          This bound governs sandwiching <B>the pump itself</B>. A third party sandwiching an
+          unrelated victim&apos;s buy is economically different (bounded — the pot still buys its
+          main at fair price). It is written up in full in{" "}
           <a className="text-magenta underline" href="/docs/security">Security &amp; audit</a>{" "}
-          as finding GH-1.
+          as finding GH-1. The volume bucket and reference gate (next chapter) close the
+          remaining farming surfaces.
         </p>
       </Callout>
 
@@ -425,122 +424,51 @@ export function Shield() {
   return (
     <>
       <Lead>
-        On a MAIN → SECONDARY sell, <C>beforeSwap</C> lets the pot absorb the sell at the
-        pool&apos;s <B>exact execution price</B> — LP fee and tick impact included. The seller
-        receives precisely what the pool would have paid; the pool&apos;s price simply does not
-        move; the absorbed main goes to the recipient instead of the curve.
+        V3 dropped the sell-side shield. The pot now pumps <B>behind every swap</B> — buying
+        main behind buys and buying the dip behind sells — and a <B>reference gate plus a
+        volume-paced bucket</B> keep that firepower from being farmed. This slug stays{" "}
+        <C>/docs/shield</C> so existing links don&apos;t break.
       </Lead>
 
-      <H2>A sell, step by step</H2>
-      <Flow
-        items={[
-          { label: "user swaps MAIN → SECONDARY" },
-          { label: "beforeSwap: pot computes the pool's exact fill price", hot: true },
-          { label: "pot pays the seller from its balance, takes the MAIN", hot: true },
-          { label: "uncovered remainder swaps through the pool normally", note: "only if the pot ran out" },
+      <Callout tone="info" title="V1 and V2 still shield">
+        <p>
+          Pools on the V1 and V2 hooks still absorb sells at the pool&apos;s exact price
+          via <C>beforeSwap</C> / <C>quoteShield</C>. New pools launch on V3 and never
+          intercept the seller. The rest of this chapter is the V3 gate.
+        </p>
+      </Callout>
+
+      <H2>The four ceilings</H2>
+      <P>
+        Every pump spend is the smallest of four ceilings, then an 80% haircut:
+      </P>
+      <T
+        head={["ceiling", "size", "what it closes"]}
+        rows={[
+          [<B key="f">fee</B>, <C key="fs">fee · depth</C>, "the sandwich: bracketing the pump loses whenever spend ≤ f·R"],
+          [<B key="b">bucket</B>, "at most one fee ceiling; credited 4× the fee every swap pays, plus one ceiling per 30 minutes", "the rush: manufactured volume unlocks only 4× what it cost in fees"],
+          [<B key="d">demand</B>, "a share of the secondary the swap moved", "gradualism: a dust trade unlocks a dust pump"],
+          [<B key="g">gate</B>, <span key="gs">60% at or below the reference; <C>fee / premium</C> above it</span>, "farming a pushed price: f/d is the exact break-even"],
         ]}
       />
-      <P>
-        Technically: the shield does not invent a price. It quotes the fill with the{" "}
-        <B>identical arithmetic the PoolManager itself runs</B> when it executes a swap (a thin
-        wrapper over Uniswap&apos;s own <C>computeSwapStep</C>), against live <C>slot0</C> and
-        liquidity. It then returns a <C>BeforeSwapDelta</C> that shrinks the pool leg by exactly{" "}
-        <C>(absorbed, paid)</C>: the pot takes the main, settles the secondary, and the pool&apos;s
-        reserves and price are untouched — the supply the pot absorbed never reaches the curve. A
-        thin pot absorbs its affordable prefix and the remainder executes as a normal swap in the
-        same call — <B>partial defense, zero seller friction</B>.
-      </P>
-      <P>
-        The test campaign proves this <B>wei-exact</B>: a hooked pool and a hookless twin (same
-        currencies, fee, price, liquidity) pay a seller identical amounts across sell sizes, and a
-        fully-absorbed sell leaves the pool&apos;s price <B>bit-identical</B> (invariant PP3).
-      </P>
 
-      <H2>Why it can&apos;t be played</H2>
-      <Callout tone="pink" title="no reference price to lag">
-        <p>
-          The shield&apos;s fill price IS the pool&apos;s execution price, read live. Moving spot
-          inside your own transaction moves your own fill with it — there is no oracle, no TWAP, no
-          gap to arbitrage.
-        </p>
-      </Callout>
+      <H2>The reference</H2>
       <P>
-        Consider the alternative to see why this matters: a pot that filled at <B>spot</B> (no fee,
-        no impact) would be strictly better than the pool — so an attacker would pump spot up
-        inside their own transaction and dump into the pot at the inflated price. Pricing at{" "}
-        <B>execution</B> removes that edge with no oracle and no TWAP: the audit&apos;s
-        manipulation test pushes the price up first and the shield still pays exactly what the
-        (manipulated) pool itself would have paid — never a wei more.
+        A time-weighted tick each funded pot keeps — a ten-minute time constant. An
+        observation <C>dt</C> after the last moves it <C>min(1, dt/τ)</C> of the way to the
+        tick that <B>stood</B> in between. It is fed only by ticks that stood across a block
+        boundary: a swap in the same block as the last one adds nothing, and the pot&apos;s
+        own pumps never enter it. It may <B>fall freely</B> (a dip reopens the gate at once)
+        but <B>rise at most ~3% a minute</B> (296 ticks).
       </P>
-      <P>
-        Because the shield never pays <B>above</B> the pool&apos;s own price, selling into the pot
-        is never better than selling into the pool. The pot cannot be drained at a discount — it
-        can only ever buy at the market&apos;s own terms. Three more mechanical guards: the shield
-        never pays more than the pot holds, never absorbs more than the seller offered, and never
-        settles a one-sided fill (if either leg rounds to zero the swap simply goes to the pool).
-      </P>
-      <Callout tone="warn" title="one input assumption">
-        <p>
-          Fee-on-transfer or rebasing <B>MAIN</B> tokens should be wrapped before pooling: the
-          shield&apos;s pool-exact settlement assumes the main that leaves the PoolManager is the
-          main the hook receives. (A fee-on-transfer <B>secondary</B> is fine — donations credit
-          what actually arrived.)
-        </p>
-      </Callout>
-
-      <H2>The math of absorption</H2>
-      <P>
-        Model the pool locally as its tangent constant-product reserves <C>(x, y)</C> at the live
-        price (<C>x = L/√P</C> of main, <C>y = L·√P</C> of secondary), fee <C>f</C>. A sell of{" "}
-        <C>s</C> main pays out along the curve:
-      </P>
-      <Code title="what the pool pays — and therefore what the shield pays">
-        quote(s) = (1−f)·s·y / (x + (1−f)·s){"\n\n"}
-        <span className="c">{"// fee applied, impact included: dquote/ds is strictly decreasing,"}</span>{"\n"}
-        <span className="c">{"// so a bigger sell earns a worse average price — on the pool AND on the pot."}</span>
+      <Code title="read the live gate">
+        (uint256 shareWad, int24 spotTick, int24 referenceTick) = hook.<span className="g">pumpShareOf</span>(poolId);
       </Code>
       <P>
-        The shield pays <B>exactly</B> <C>quote(s)</C> — computed by the identical{" "}
-        <C>computeSwapStep</C> arithmetic, tick-precise where the constant-product sketch above is
-        the intuition. Seller indifference is therefore an <B>identity, not an approximation</B>:{" "}
-        <C>payout_shield(s) ≡ payout_pool(s)</C>, wei-exact, proven against a hookless twin across
-        sell sizes.
-      </P>
-      <H3>Partial absorption — the price only sees the overflow</H3>
-      <Code title="pot affords a prefix a of a sell s">
-        seller receives{"   "}= quote(a){"  "}+{"  "}pool-executes(s − a){"\n"}
-        price move{"        "}∝ (s − a){"    "}<span className="c">{"// not s — the absorbed prefix never touches the curve"}</span>{"\n\n"}
-        <span className="c">{"// defense factor: the down-move shrinks by a/s."}</span>{"\n"}
-        <span className="c">{"// full absorb (a = s): price is bit-identical before and after the sell."}</span>
-      </Code>
-      <P>
-        Because the pool leg of a partial fill starts from an <B>un-moved</B> price, the
-        seller&apos;s blended payout is never worse than the hookless pool — marginally better, in
-        fact, which is the one bounded economic surface a self-sandwicher can rent (written up
-        honestly as{" "}
-        <a className="text-magenta underline" href="/docs/security">GH-1, posture 3</a>: bounded by
-        the pot&apos;s affordability, fair-priced for the pot in every posture).
-      </P>
-
-      <H2>What the shield achieves economically</H2>
-      <P>
-        Absorbed supply <B>never reaches the curve</B>: the sell that would have pushed the price
-        down is converted into pot inventory delivered to the recipient (or burned). For holders
-        this reads as downside doing less damage while the pot lasts; for the seller nothing changes
-        at all. The pot is a bid wall that costs nothing to cross and cannot be spoofed — it pays
-        out exactly at market.
-      </P>
-
-      <H2>Quoting the shield</H2>
-      <Code>
-        <span className="c">{"// how much of a 1000-token sell would the pot absorb right now?"}</span>{"\n"}
-        (uint256 absorbed, uint256 paid) ={"\n"}
-        {"  "}hook.<span className="g">quoteShield</span>(key, -1000e18);{" "}
-        <span className="c">{"// negative = exact input (V4 convention)"}</span>
-      </Code>
-      <P>
-        Returns zeros when the pot is unconfigured, empty, or the direction isn&apos;t the shielded
-        one — safe to call blindly from UIs and routers.
+        At or below the reference the share is 60%. Above it, <C>min(60%, f / d)</C> where{" "}
+        <C>d</C> is main&apos;s premium over the reference. Pushing the price inside your own
+        transaction never moves the reference, so the push reads as a premium and the gate
+        shrinks every pump you summon.
       </P>
     </>
   );
@@ -643,8 +571,8 @@ export function BuybackManagement() {
     <>
       <Lead>
         The pot decides <B>how much</B> main to buy; the LP program&apos;s operator decides{" "}
-        <B>what happens to it</B>. The buyback split carves every pot purchase — pump or shield
-        alike — into three legs: a share that <B>compounds into the pool&apos;s own liquidity</B>, a
+        <B>what happens to it</B>. The buyback split carves every pot purchase
+        into three legs: a share that <B>compounds into the pool&apos;s own liquidity</B>, a
         share that <B>burns</B>, and the exact rest that follows the pot&apos;s recipient. Two
         sliders, and the buyback stops being just a payout: it becomes a flywheel.
       </Lead>
@@ -652,7 +580,7 @@ export function BuybackManagement() {
       <H2>The waterfall</H2>
       <Flow
         items={[
-          { label: "the pot buys (pump) or absorbs (shield) an amount of MAIN", hot: true },
+          { label: "the pot buys an amount of MAIN", hot: true },
           { label: "potCompoundShareWad → credited to the program's carry", note: "waiting LP budget — minted into the position on the next harvest" },
           { label: "potBurnShareWad → the burn cascade", note: "burn() → 0xdEaD → held-forever, exactly the delivery chapter's walk" },
           { label: "the exact rest → the pot's recipient", note: "a live address is delivered to; address(0) burns; a refusal parks" },
@@ -898,7 +826,7 @@ export function HarvestMath() {
         The floors always round <B>against</B> the automated legs and <B>toward</B> the named
         recipient — division dust is at most 1 wei per share leg per harvest, it lands in a real
         address&apos;s pocket, and it is never minted and never lost. The stateful fuzz campaign
-        interleaves harvests with pumps and shields in the same frames — exactly where a
+        interleaves harvests with pumps in the same frames — exactly where a
         bookkeeping slip between the ledgers would hide — and the identity holds throughout.
       </P>
 

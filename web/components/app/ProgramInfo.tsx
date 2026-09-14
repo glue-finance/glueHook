@@ -5,7 +5,8 @@ import { useAccount } from "wagmi";
 import type { Net } from "@/lib/chains";
 import { ftoken, short } from "@/lib/format";
 import { isNative, type Pot, type Program } from "@/lib/hook";
-import { useTokenMeta } from "@/lib/usePool";
+import { useDeliveredCum, useTokenMeta } from "@/lib/usePool";
+import type { RegisteredPool } from "@/lib/registry";
 
 /* Read-only "how is this pool configured" panel — compact and visual.
  * Desktop: the `info` tab of the settings box. Mobile: its own card in the
@@ -118,14 +119,17 @@ export function ProgramInfo({
   net,
   pot,
   program,
+  pool,
 }: {
   net: Net;
   pot: Pot | undefined;
   program: Program | undefined;
+  pool?: RegisteredPool;
 }) {
   const { address: me } = useAccount();
   const main = useTokenMeta(net, pot?.main);
   const sec = useTokenMeta(net, pot?.secondary);
+  const delivered = useDeliveredCum(net, pool?.poolId ?? null, pot?.main, pool?.hook);
   const mainSym = main.data?.symbol ?? "MAIN";
   const secSym = sec.data?.symbol ?? "SECONDARY";
   const mainDec = main.data?.decimals ?? 18;
@@ -173,7 +177,7 @@ export function ProgramInfo({
 
       {!exists ? (
         <p className="mono rounded-xl border border-[var(--line)] bg-panel2 px-3 py-2.5 text-[11px] leading-relaxed text-dim2">
-          no LP program yet — the pot (donate, pump, shield) works anyway, and
+          no LP program yet — the pot (donate, pump) works anyway, and
           its whole output goes {potBurns ? "to the burn cascade 🔥" : `to ${pot ? short(pot.recipient) : "…"}`}.
         </p>
       ) : (
@@ -231,6 +235,12 @@ export function ProgramInfo({
             <span className={`pill ${program!.publicHarvest || program!.owner === zeroAddress ? "hi" : ""}`}>
               harvest: {program!.publicHarvest || program!.owner === zeroAddress ? "public" : "owner"}
             </span>
+            {program!.native && <span className="pill hi">native engine</span>}
+            {program!.native && delivered.data !== undefined && (
+              <span className="pill">
+                delivered {ftoken(delivered.data, mainDec)} {mainSym}
+              </span>
+            )}
           </div>
         </>
       )}
@@ -249,6 +259,7 @@ export function ProgramInfoCard(props: {
   net: Net;
   pot: Pot | undefined;
   program: Program | undefined;
+  pool?: RegisteredPool;
 }) {
   return (
     <div className="panel">

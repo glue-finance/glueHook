@@ -8,6 +8,7 @@ export type PoolEventKind =
   | "Shielded"
   | "Donated"
   | "Harvested"
+  | "HarvestRecorded"
   | "Compounded"
   | "Delivered"
   | "ProgramLiquidityAdded"
@@ -34,6 +35,9 @@ const EVENTS: AbiEvent[] = [
     "event Harvested(bytes32 indexed poolId, uint256 mainFees, uint256 secondaryFees, uint256 burned, uint256 fueled)",
   ),
   parseAbiItem(
+    "event HarvestRecorded(bytes32 indexed poolId, address indexed engine, uint256 deliveredMain, uint256 deliveredSec, bool recorded)",
+  ),
+  parseAbiItem(
     "event Compounded(bytes32 indexed poolId, uint128 liquidity, uint256 amount0Used, uint256 amount1Used)",
   ),
   // Delivery enum canonicalizes to uint8 in the signature — selector matches on-chain
@@ -57,9 +61,9 @@ const EVENTS: AbiEvent[] = [
 const TOPIC0S: Hex[] = EVENTS.map((e) => toEventSelector(e));
 const BY_TOPIC0 = new Map<Hex, AbiEvent>(EVENTS.map((e, i) => [TOPIC0S[i], e]));
 
-// v5: Delivered joined the topic filter — v4 caches were scanned without it,
-// so their frontier silently misses every burn/delivery log; rescan clean.
-type FeedCache = { v: 5; lastBlock: string; events: PoolEvent[] };
+// v6: HarvestRecorded joined the topic filter — v5 caches were scanned
+// without it, so their frontier silently misses native-engine reports.
+type FeedCache = { v: 6; lastBlock: string; events: PoolEvent[] };
 
 const feedKey = (chainId: number, poolId: string) => `gh.feed.${chainId}.${poolId.toLowerCase()}`;
 
@@ -69,13 +73,13 @@ function loadFeed(chainId: number, poolId: string): FeedCache {
       const raw = localStorage.getItem(feedKey(chainId, poolId));
       if (raw) {
         const c = JSON.parse(raw) as FeedCache;
-        if (c.v === 5) return c;
+        if (c.v === 6) return c;
       }
     } catch {
       /* rescan */
     }
   }
-  return { v: 5, lastBlock: "0", events: [] };
+  return { v: 6, lastBlock: "0", events: [] };
 }
 
 function saveFeed(chainId: number, poolId: string, c: FeedCache) {

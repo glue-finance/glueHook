@@ -69,7 +69,7 @@ export function Launch() {
       <T
         head={["field", "what it does at launch"]}
         rows={[
-          [<C key="f1">buybackShareWad</C>, "the flywheel's fuel line — this slice of secondary-side fees lands in the pot every harvest, so pumping and shielding never depend on donations"],
+          [<C key="f1">buybackShareWad</C>, "the flywheel's fuel line — this slice of secondary-side fees lands in the pot every harvest, so pumping never depends on donations"],
           [<C key="f2">burnShareWad</C>, <>main-side fees sent down the burn cascade — must be <C>0</C> when main is native</>],
           [<C key="f3">compoundShareWad</C>, "both sides — the share that becomes position liquidity again (the autocompound engine)"],
           [<span key="f4"><C>potCompoundShareWad</C> / <C>potBurnShareWad</C></span>, "the buyback split: how what the pot BUYS is carved between the LP carry, the burn cascade, and the pot's recipient"],
@@ -187,7 +187,7 @@ export function Launch() {
       </Code>
       <Callout tone="info" title="a pool with no program at all">
         <p>
-          Stop after step 2. The pot, the pump and the shield work standalone — the LP program is
+          Stop after step 2. The pot and the pump work standalone — the LP program is
           optional. It can be created later at any time (still admin-only, still one per pool).
         </p>
       </Callout>
@@ -426,7 +426,7 @@ export function Integrate() {
       <H2>Route protocol revenue into buybacks</H2>
       <Code title="the entire integration">
         <span className="g">IGlueHook</span> constant HOOK ={"\n"}
-        {"  "}IGlueHook(<span className="g">0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</span>);{"\n\n"}
+        {"  "}IGlueHook(<span className="g">0xbB021554C5294328b04fa313669715bD201BA040</span>);{"\n\n"}
         function routeRevenue(uint256 amt) external {"{"}{"\n"}
         {"  "}<span className="c">{"// ERC20 secondary: approve + donate"}</span>{"\n"}
         {"  "}SECONDARY.approve(address(HOOK), amt);{"\n"}
@@ -437,16 +437,15 @@ export function Integrate() {
       </Code>
       <P>
         That&apos;s it. No oracle to configure, no keeper to fund, no schedule to design. The pot
-        spends itself into real buys and real sells at the pool&apos;s own price — your revenue
-        becomes buy pressure exactly when the market shows demand, and sell absorption exactly when
-        it shows supply.
+        spends itself into real buys at the pool&apos;s own price — your revenue
+        becomes buy pressure exactly when the market shows demand.
       </P>
 
       <H2>Quote before you act</H2>
       <Code>
         <span className="c">{"// what would the machine do right now?"}</span>{"\n"}
         (uint256 spend, uint256 minOut) = HOOK.<span className="g">quotePump</span>(key, 1 ether);{"\n"}
-        (uint256 absorbed, uint256 paid) = HOOK.<span className="g">quoteShield</span>(key, -1e18);{"\n\n"}
+        (uint256 share, int24 spot, int24 refTick) = HOOK.<span className="g">pumpShareOf</span>(poolId);{"\n\n"}
         <span className="c">{"// read the machine's state"}</span>{"\n"}
         IGlueHook.Pot memory pot = HOOK.<span className="g">potOf</span>(poolId);{"\n"}
         IGlueHook.Program memory prog = HOOK.<span className="g">programOf</span>(poolId);
@@ -547,7 +546,7 @@ export function BuildApps() {
       <T
         head={["surface", "opportunity"]}
         rows={[
-          [<C key="1">quotePump / quoteShield</C>, "routers can price the machine into their paths — a shielded sell has better effective depth than the raw pool"],
+          [<C key="1">quotePump / pumpShareOf</C>, "routers can price the machine into their paths — the spend is a free view, the gate is a free view"],
           [<C key="2">harvest(key)</C>, "when publicHarvest is on, harvest-calling is a public good anyone can run (the auto-trigger already fires on swaps)"],
           [<C key="3">flushDirect(poolId)</C>, "permissionless retry of parked deliveries — free karma for keepers"],
         ]}

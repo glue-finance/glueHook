@@ -43,6 +43,16 @@ export function Api() {
         .
       </Lead>
 
+      <Callout tone="info" title="clear signing">
+        <p>
+          Every user-facing write is described for wallets under{" "}
+          <a className="text-magenta underline" href="https://github.com/glue-finance/GlueHook/tree/main/erc7730">
+            erc7730/
+          </a>{" "}
+          (ERC-7730). Ledger and other clear-signing wallets render those screens instead of raw calldata.
+        </p>
+      </Callout>
+
       <H2>Launch & pot configuration</H2>
       <Fn
         sig="launchPool(key, sqrtPriceX96, main, recipient, tickLower, tickUpper, liquidity, owner, config) payable → (amount0, amount1)"
@@ -138,12 +148,28 @@ export function Api() {
         <p>Pulls everything booked to the caller in <C>asset</C> after refused pushes. Full-gas, reverting delivery.</p>
       </Fn>
 
+      <Fn sig="pumpShareOf(poolId) → (shareWad, spotTick, referenceTick)" who="anyone (view)">
+        <p>
+          The live reference gate: the share of a swap&apos;s secondary the pump may match, the
+          pool&apos;s spot tick, and the 10-minute EMA reference. At or below the reference the
+          share is 60%; above it, <C>min(60%, fee / premium)</C>.
+        </p>
+      </Fn>
+      <Fn sig="deliveredCumOf(poolId, asset) → amount" who="anyone (view)">
+        <p>
+          Cumulative MAIN or SECONDARY the hook has delivered to a native LP engine for this pool —
+          the engine&apos;s exactly-once reconcile cursor.
+        </p>
+      </Fn>
+
       <H2>Views</H2>
       <Code>
+        <span className="g">GLUE_STICK</span>{" "}={"  "}<span className="l">0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b</span>{"\n"}
         <span className="g">potOf</span>(poolId) → Pot{"\n"}
         <span className="g">programOf</span>(poolId) → Program{"\n"}
-        <span className="g">quotePump</span>(key, userAmountIn) → (spend, minOut){"\n"}
-        <span className="g">quoteShield</span>(key, amountSpecified) → (absorbed, paid){"\n"}
+        <span className="g">quotePump</span>(key, demand) → (spend, minOut){"\n"}
+        <span className="g">pumpShareOf</span>(poolId) → (shareWad, spotTick, referenceTick){"\n"}
+        <span className="g">deliveredCumOf</span>(poolId, asset) → amount{"\n"}
         <span className="g">parkedOf</span>(asset) → amount{"          "}<span className="c">{"// refused deliveries, all pools"}</span>{"\n"}
         <span className="g">parkedDirectOf</span>(poolId) → amount{"   "}<span className="c">{"// refused deliveries, this pool"}</span>{"\n"}
         <span className="g">heldOf</span>(asset) → amount{"            "}<span className="c">{"// held-forever ledger (custody = burn)"}</span>{"\n"}
@@ -155,9 +181,12 @@ export function Api() {
       <Code title="Pot">
         address admin;{"      "}<span className="c">{"// the pool's initializer"}</span>{"\n"}
         address main;{"       "}<span className="c">{"// the defended currency"}</span>{"\n"}
+        uint32 pumpBucketTimestamp;{" "}<span className="c">{"// spend-bucket level as a timestamp"}</span>{"\n"}
         address secondary;{"  "}<span className="c">{"// the buyback currency — the pot's only asset"}</span>{"\n"}
         address recipient;{"  "}<span className="c">{"// 0x0 = burn"}</span>{"\n"}
-        bool configured;{"    "}<span className="c">{"// liveness flag (main may legally be 0x0 = native)"}</span>{"\n"}
+        bool configured;{"\n"}
+        int32 referenceTickX8;{"  "}<span className="c">{"// 10-min EMA, 1/256ths of a tick"}</span>{"\n"}
+        int24 lastTick;{"   "}uint32 lastTimestamp;{"\n"}
         uint256 balance;{"    "}<span className="c">{"// pot inventory, in secondary"}</span>
       </Code>
       <Code title="ProgramConfig — the operator-editable half">
@@ -174,7 +203,7 @@ export function Api() {
       </Code>
       <Code title="Program — the full record (programOf)">
         uint128 liquidity;{"   "}int24 tickLower;{"   "}int24 tickUpper;{"\n"}
-        bool exists;{"   "}bool publicHarvest;{"\n"}
+        bool exists;{"   "}bool publicHarvest;{"   "}bool armed;{"   "}bool native;{"\n"}
         uint64 buybackShareWad;{"   "}uint64 burnShareWad;{"   "}uint64 compoundShareWad;{"\n"}
         uint64 potCompoundShareWad;{"   "}uint64 potBurnShareWad;{" "}
         <span className="c">{"// the buyback split"}</span>{"\n"}
@@ -193,7 +222,7 @@ export function Api() {
         <span className="g">RecipientSet</span>(poolId, recipient){"\n"}
         <span className="g">Donated</span>(poolId, donor, amount){"\n"}
         <span className="g">Pumped</span>(poolId, spent, bought){"\n"}
-        <span className="g">Shielded</span>(poolId, absorbed, paid){"\n"}
+        <span className="g">HarvestRecorded</span>(poolId, engine, deliveredMain, deliveredSec, recorded){"\n"}
         <span className="g">Delivered</span>(poolId, to, amount, mode){"\n"}
         <span className="g">FlushedDirect</span>(poolId, to, amount){"\n"}
         <span className="g">ProgramCreated</span>(poolId, owner, tickLower, tickUpper){"\n"}
@@ -233,7 +262,7 @@ export function Security() {
   return (
     <>
       <Lead>
-        The full self-audit — scope, threat model, the pump/shield math with proofs, the invariant
+        The full self-audit — scope, threat model, the pump math with proofs, the invariant
         catalogue, findings and trust assumptions — lives in{" "}
         <a
           className="text-magenta underline"
@@ -248,10 +277,10 @@ export function Security() {
 
       <Stats
         items={[
-          { v: "127", l: "forge tests, 0 fail", c: "var(--t-green)" },
-          { v: "12", l: "stateful invariants", c: "var(--t-blue)" },
-          { v: "12", l: "fuzzed theorems", c: "var(--t-magenta)" },
-          { v: "5", l: "live-fork proofs", c: "var(--t-teal)" },
+          { v: "191", l: "forge tests, 0 fail", c: "var(--t-green)" },
+          { v: "49", l: "external-suite tests", c: "var(--t-blue)" },
+          { v: "15", l: "formal fuzz properties", c: "var(--t-magenta)" },
+          { v: "25", l: "MEV campaign tests", c: "var(--t-teal)" },
         ]}
       />
 
@@ -276,8 +305,8 @@ export function Security() {
         rows={[
           [<B key="1">pot solvency</B>, <span key="v1">the hook&apos;s balance of every asset covers <C>obligationOf(asset)</C> — every unit is attributed</span>],
           [<B key="2">donation conservation</B>, "every donated unit is spent on the market, delivered, parked, or still in the pot — never lost, never skimmed"],
-          [<B key="3">price immobility on a full absorb</B>, "a fully-shielded sell leaves the pool's sqrtPrice exactly unchanged"],
-          [<B key="4">pump boundedness</B>, "the pump never spends beyond min(pot, fee·depth, buy input) · 80%"],
+          [<B key="3">pump boundedness</B>, "the pump never spends beyond min(pot, fee·depth, share·demand, bucket) · 80%"],
+          [<B key="4">reference gate</B>, "above the 10-min EMA the share collapses to min(60%, fee/premium); the reference may rise at most 296 ticks/min"],
           [<B key="5">main attribution</B>, "parked + held + carry + owed always reconciles to what entered minus what left"],
           [<B key="6">monotone program liquidity</B>, "a program's position only grows from compounds; only the owner ever removes"],
         ]}
@@ -329,9 +358,10 @@ export function Security() {
         victim&apos;s genuine buy, capped by the victim&apos;s own input.
       </P>
 
-      <H3>Posture 3 — self-sandwiching through a partially-absorbing shield: the attacker buys the pot its burn</H3>
+      <H3>Posture 3 — self-sandwiching through a partially-absorbing shield (V1/V2 only)</H3>
       <P>
-        The subtlest surface, stated honestly: when a shield quote is tick-bounded, the pot absorbs
+        V3 dropped the sell-side shield, so this surface does not exist on new pools. On V1/V2,
+        when a shield quote is tick-bounded, the pot absorbs
         a slice of a dump at the current (attacker-elevated) price without moving the pool, and the
         remainder executes from the un-moved price. A large buy followed by a full dump can
         therefore exit at a better blended price than a hookless pool would give — in the fuzz
@@ -382,10 +412,10 @@ export function Security() {
       <T
         head={["circumstance", "overhead vs bare V4"]}
         rows={[
-          ["hooked pool, pot empty, no program (idle)", "+8–12k gas — one pot read + callback plumbing; the only cost every swap pays"],
-          ["pump fires on a buy", "+88k gas — the pot's own swap + delivery, paid by the buy that triggered it"],
-          ["shield fires on a sell", "+38k gas — pool-exact quote + fill + delivery"],
-          ["auto-harvest + compound inside a swap", "+111k gas — collect + split + compound mint, only on the swap that crosses the minimums"],
+          ["hooked pool, pot empty, no program (idle)", "+6–10k gas — one pot read + callback plumbing; the only cost every swap pays"],
+          ["pump fires behind a buy", "+96k gas — observe + bucket + gate + the pot's own swap + delivery, paid by the swap that triggered it"],
+          ["pump fires behind a sell", "+72k gas — the same path, into a warmer pool"],
+          ["auto-harvest + compound inside a swap", "the two-sided harvest, the split, and the compound mint — only on the swap that crosses the minimums"],
         ]}
       />
       <P>
@@ -397,7 +427,7 @@ export function Security() {
       <Code>
         git clone https://github.com/glue-finance/GlueHook && cd GlueHook{"\n"}
         forge install OpenZeppelin/openzeppelin-contracts{"\n"}
-        forge clean && forge test{"          "}<span className="c">{"// 127 tests, 0 failures"}</span>{"\n"}
+        forge clean && forge test{"          "}<span className="c">{"// 191 tests, 0 failures"}</span>{"\n"}
         FORK_RPC_URL=… forge test{"          "}<span className="c">{"// 128: +5 against the LIVE PoolManager"}</span>
       </Code>
 
@@ -439,8 +469,8 @@ export function GlossaryPage() {
           [<B key="1">MAIN</B>, "the defended currency: bought on pumps, absorbed from sells, delivered to the recipient"],
           [<B key="2">SECONDARY</B>, "the buyback currency: the only asset the pot holds and donate accepts"],
           [<B key="3">pot</B>, "a pool's permissionless war chest, denominated in secondary"],
-          [<B key="4">pump</B>, "the pot buying more main inside a buy's own transaction (afterSwap)"],
-          [<B key="5">shield</B>, "the pot absorbing a sell at the pool's exact execution price (beforeSwap)"],
+          [<B key="4">pump</B>, "the pot buying more main inside a swap's own transaction (afterSwap)"],
+          [<B key="5">gate</B>, "the 10-minute EMA + volume-paced bucket that keep the pot unplayable; V1/V2 still shield sells"],
           [<B key="6">burn cascade</B>, "burn() → 0xdEaD → held forever; how burn-intent main leaves circulation"],
           [<B key="7">LP program</B>, "the pool's single hook-held liquidity position plus its split rules"],
           [<B key="8">harvest</B>, "collecting the program's fees and running the split (auto in-swap, or manual)"],

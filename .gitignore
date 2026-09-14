@@ -17,5 +17,6 @@ package-lock.json
 # serves the deploy scripts (tests run through forge); web/package.json stays.
 scripts/*
 !scripts/run-external.sh
-web/scripts/
+web/scripts/*
+!web/scripts/gen-abi.mjs
 /package.json

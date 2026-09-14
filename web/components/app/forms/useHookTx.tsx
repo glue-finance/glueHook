@@ -6,7 +6,7 @@ import { useAccount, useSwitchChain, useWriteContract } from "wagmi";
 import { waitForTransactionReceipt } from "wagmi/actions";
 import type { Net } from "@/lib/chains";
 import { clientForNet } from "@/lib/client";
-import { glueHookAbi } from "@/lib/hook";
+import { abiFor } from "@/lib/hook";
 import { wagmiConfig } from "@/lib/wagmi";
 
 export type TxState =
@@ -61,7 +61,7 @@ export function useHookTx(net: Net) {
         if (chainId !== net.chain.id) await switchChainAsync({ chainId: net.chain.id });
         const hash = await writeContractAsync({
           address: opts.address ?? net.hook,
-          abi: opts.abi ?? (glueHookAbi as Abi),
+          abi: opts.abi ?? (abiFor(opts.address ?? net.hook) as Abi),
           functionName: opts.functionName,
           args: opts.args as unknown[],
           value: opts.value,

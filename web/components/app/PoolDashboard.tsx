@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { formatUnits } from "viem";
 import { useAccount } from "wagmi";
 import type { Net } from "@/lib/chains";
+import { tagOfHook } from "@/lib/chains";
 import { ftoken, fnum } from "@/lib/format";
 import type { Pot, Program } from "@/lib/hook";
 import type { RegisteredPool } from "@/lib/registry";
@@ -186,7 +187,7 @@ export function PoolDashboard({
             {key && (
               <PairIcons net={net} a={key.currency0} b={key.currency1} symA={sym0} symB={sym1} size={18} />
             )}
-            {sym0}/{sym1}{key ? ` · ${(key.fee / 10_000).toFixed(2)}%` : ""} · tick spacing {key?.tickSpacing ?? "—"}
+            {sym0}/{sym1}{key ? ` · ${(key.fee / 10_000).toFixed(2)}%` : ""} · tick spacing {key?.tickSpacing ?? "—"} · {tagOfHook(pool.hook).toUpperCase()}
           </span>
         </div>
         <button

@@ -10,6 +10,7 @@ import {
   type Log,
 } from "viem";
 import type { Net } from "./chains";
+import { earliestDeployBlock, hooksOf } from "./chains";
 import { clientForNet, scanClientsFor } from "./client";
 import { poolIdOf, type PoolKey } from "./hook";
 import { findLogsBackward, scanLogs } from "./logs";
@@ -19,16 +20,15 @@ export type RegisteredPool = {
   key: PoolKey | null; // null when recovery failed (pot usable, key-bound ops not)
   admin: Address;
   block: number;
-  /** the hook deployment this pool's pot lives on (V1 or the canonical V2) —
+  /** the hook deployment this pool's pot lives on (V1, V2 or the canonical V3) —
    *  every per-pool read and write must target THIS address */
   hook: Address;
 };
 
-// v8: tip-first scan so brand-new pots show before the historical crawl
-// finishes. v7 caches could stamp a frontier that skipped a window of V2
-// PotOpened logs on a quiet public RPC; the bump forces a rescan.
+// v9: three hook generations (V1 + V2 + V3). v8 caches only watched two
+// addresses and could stamp a frontier that skipped V3 PotOpened logs.
 type Cache = {
-  v: 8;
+  v: 9;
   lastBlock: string;
   pools: Record<string, { key: PoolKey | null; admin: Address; block: number; hook: Address }>;
 };
@@ -42,6 +42,9 @@ const pmInitializeEvent = parseAbiItem(
 
 const INIT_POT_SELECTOR = toFunctionSelector(
   "initPot((address,address,uint24,int24,address),address,address)",
+);
+const LAUNCH_POOL_SELECTOR = toFunctionSelector(
+  "launchPool((address,address,uint24,int24,address),uint160,address,address,int24,int24,uint128,address,(uint64,uint64,uint64,uint64,uint64,bool,address,address,uint256,uint256))",
 );
 
 /**
@@ -60,13 +63,13 @@ function loadCache(chainId: number): Cache {
       const raw = localStorage.getItem(cacheKey(chainId));
       if (raw) {
         const c = JSON.parse(raw) as Cache;
-        if (c.v === 8) return c;
+        if (c.v === 9) return c;
       }
     } catch {
       /* corrupted cache → rescan */
     }
   }
-  return { v: 8, lastBlock: "0", pools: {} };
+  return { v: 9, lastBlock: "0", pools: {} };
 }
 
 function saveCache(chainId: number, c: Cache) {
@@ -99,10 +102,12 @@ function keyFromCalldata(data: Hex, poolId: Hex): PoolKey | null {
   const id = poolId.toLowerCase();
   const heads: Hex[] = [];
   if (data.length >= 2 + 8 + 320) heads.push(slice(data, 4, 4 + 160));
-  const idx = data.indexOf(INIT_POT_SELECTOR.slice(2));
-  if (idx >= 2 && (idx - 2) % 2 === 0) {
-    const at = (idx - 2) / 2 + 4;
-    if (data.length >= 2 + at * 2 + 320) heads.push(slice(data, at, at + 160));
+  for (const sel of [INIT_POT_SELECTOR, LAUNCH_POOL_SELECTOR]) {
+    const idx = data.indexOf(sel.slice(2));
+    if (idx >= 2 && (idx - 2) % 2 === 0) {
+      const at = (idx - 2) / 2 + 4;
+      if (data.length >= 2 + at * 2 + 320) heads.push(slice(data, at, at + 160));
+    }
   }
   for (const head of heads) {
     try {
@@ -158,7 +163,7 @@ async function keysFromPoolManager(
     const logs = await findLogsBackward(scanClientsFor(net), {
       address: net.poolManager,
       topics: [INITIALIZE_TOPIC0, ids.map((i) => i.toLowerCase() as Hex)],
-      fromBlock: BigInt(net.legacy?.deployBlock ?? net.deployBlock),
+      fromBlock: BigInt(earliestDeployBlock(net)),
       toBlock,
       maxRange: BigInt(net.logRange),
       done: (ls) => ls.length >= ids.length,
@@ -243,7 +248,7 @@ async function ingestOpenedLogs(
 }
 
 /**
- * Scan PotOpened logs across BOTH hook deployments from the earliest deploy
+ * Scan PotOpened logs across every hook generation from the earliest deploy
  * block (or the cached frontier), and recover each pool's PoolKey.
  *
  * When the backlog is wider than one RPC window the recent tip is scanned
@@ -256,11 +261,11 @@ export async function scanPools(
   onPartial?: (pools: RegisteredPool[]) => void,
 ): Promise<RegisteredPool[]> {
   const cache = loadCache(net.chain.id);
-  const earliest = net.legacy?.deployBlock ?? net.deployBlock;
+  const earliest = earliestDeployBlock(net);
   const from =
     BigInt(cache.lastBlock) > BigInt(earliest) ? BigInt(cache.lastBlock) + 1n : BigInt(earliest);
   const latest = await clientForNet(net).getBlockNumber();
-  const hooks = net.legacy ? [net.legacy.hook, net.hook] : net.hook;
+  const hooks = hooksOf(net);
   const cap = BigInt(net.logRange);
 
   let dirty = false;
@@ -309,7 +314,7 @@ export async function scanPools(
   }
 
   const unresolved: Hex[] = [];
-  let newestMiss = BigInt(net.legacy?.deployBlock ?? net.deployBlock);
+  let newestMiss = BigInt(earliestDeployBlock(net));
   for (const [id, p] of Object.entries(cache.pools)) {
     if (p.key) continue;
     unresolved.push(id as Hex);

@@ -98,11 +98,11 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
   "the-pot": [
     {
       q: "Who controls the pot's balance?",
-      a: "Nobody, including the pot admin — there is no withdrawal function. The pot's only two exits are pumping buys and shielding sells on its own pool, both at the pool's live price.",
+      a: "Nobody, including the pot admin — there is no withdrawal function. The pot's only exit is pumping main on its own pool, at the pool's live price, behind real swaps.",
     },
     {
       q: "What are MAIN and SECONDARY exactly?",
-      a: "MAIN is the defended asset: it gets bought on pumps and absorbed from sells. SECONDARY is the war-chest currency: the only thing the pot holds and the only thing donate accepts.",
+      a: "MAIN is the defended asset: it is what the pot buys. SECONDARY is the war-chest currency: the only thing the pot holds and the only thing donate accepts.",
     },
     {
       q: "Can one token have several pots?",
@@ -136,13 +136,13 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Can a smart contract donate programmatically?",
-      a: "Yes — one call: hook.donate{value: amt}(key, amt). That's the whole integration; pair it with quotePump/quoteShield to size donations against the defense you want.",
+      a: "Yes — one call: hook.donate{value: amt}(key, amt). That's the whole integration; pair it with quotePump and pumpShareOf to size donations against the firepower you want.",
     },
   ],
   pump: [
     {
       q: "When does a pump fire?",
-      a: "In afterSwap, inside a buy of MAIN, in the same transaction. No schedule, no keeper, no button — the buy itself is the trigger.",
+      a: "In afterSwap, behind every swap that moves secondary — a buy of MAIN or a sell of MAIN — in the same transaction. No schedule, no keeper, no button.",
     },
     {
       q: "Why can't the pump be sandwiched?",
@@ -163,24 +163,24 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
   ],
   shield: [
     {
-      q: "What does the seller actually get?",
-      a: "Exactly what the pool would have paid — the pool's execution price with fee and tick impact included. The seller can't tell the shield exists; only the pool's reserves notice.",
+      q: "Does V3 still absorb sells?",
+      a: "No. V1 and V2 still shield sells via beforeSwap. V3 dropped that path: the pot is a standing buy that can fire behind every swap, including sells (buying the dip). The seller always hits the curve.",
     },
     {
-      q: "Why doesn't the price move on a shielded sell?",
-      a: "The pot absorbs the sell in beforeSwap: it takes the MAIN being sold and pays the secondary the pool would have paid, so the curve itself never processes the sell.",
+      q: "What keeps the pot from being farmed?",
+      a: "Four ceilings, then an 80% haircut: the sandwich bound f·R, a volume-paced bucket (at most 4× the fee per unit volume), a share of the swap's secondary, and a 10-minute EMA gate that may rise at most ~3%/min. Above the reference the share collapses to fee/premium.",
     },
     {
-      q: "What if the sell is bigger than the pot can absorb?",
-      a: "The shield absorbs what it can afford and the remainder executes against the pool normally. Defense degrades gracefully — it never blocks or reverts the trade.",
+      q: "What is the reference?",
+      a: "A ten-minute time-weighted tick each funded pot keeps. It is fed only by ticks that stood across a block boundary; the pot's own pumps never enter it. It may fall freely (a dip reopens the gate) but rise at most 296 ticks a minute.",
     },
     {
-      q: "Where does the absorbed MAIN go?",
-      a: "Same as a pump's output: through the buyback split — compound share into liquidity, burn share through the cascade, the rest to the recipient.",
+      q: "How do I read the live gate?",
+      a: "pumpShareOf(poolId) returns (shareWad, spotTick, referenceTick). At or below the reference the share is 60%; above it, min(60%, fee/premium).",
     },
     {
-      q: "Can I preview the shield before selling?",
-      a: "Yes: quoteShield(key, sellSize) returns what would be absorbed and what the pot would pay, as a view — UIs and contracts can read the defense before acting.",
+      q: "Can a pump ever make my swap fail?",
+      a: "No. The pump body is wrapped so any internal failure is swallowed and the carrying swap lands normally — the machine can only ever add to a trade, never block one.",
     },
   ],
   delivery: [
@@ -208,7 +208,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
   "buyback-management": [
     {
       q: "What are the two split knobs?",
-      a: "potCompoundShareWad and potBurnShareWad — WAD fractions (1e18 = 100%) of every pump/shield output. Compound share becomes LP budget, burn share goes through the cascade, the exact remainder goes to the recipient.",
+      a: "potCompoundShareWad and potBurnShareWad — WAD fractions (1e18 = 100%) of every pump output. Compound share becomes LP budget, burn share goes through the cascade, the exact remainder goes to the recipient.",
     },
     {
       q: "What happens with no LP program or a zeroed split?",
@@ -238,7 +238,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Do LP fees and the buyback split interact?",
-      a: "They're two independent stages: LP fees split at harvest time; pump/shield output splits at buyback time. Both can compound into the same position and both are edited by the same operator.",
+      a: "They're two independent stages: LP fees split at harvest time; pump output splits at buyback time. Both can compound into the same position and both are edited by the same operator.",
     },
     {
       q: "Can the shares sum to less than 100%?",
@@ -454,7 +454,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "What happens to the machine if the team abandons the project?",
-      a: "Nothing. The trigger is trading, not the team: as long as anyone swaps, fees harvest, the position compounds, the pot pumps and shields, and supply burns. If the roles were surrendered, even the policy is frozen and runs unchanged forever.",
+      a: "Nothing. The trigger is trading, not the team: as long as anyone swaps, fees harvest, the position compounds, the pot pumps, and supply burns. If the roles were surrendered, even the policy is frozen and runs unchanged forever.",
     },
     {
       q: "Is this the same as renouncing a token contract?",
@@ -462,7 +462,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "If no keeper is paid, who pays the gas for all this?",
-      a: "The triggering swap carries a bounded slice of gas for the auto-harvest, controlled by the minimums the operator sets — so it only fires when the harvest is worth far more than the overhead. Pumps and shields ride the swaps that trigger them. Heavy work can always go through the optional manual path with the caller's own gas.",
+      a: "The triggering swap carries a bounded slice of gas for the auto-harvest, controlled by the minimums the operator sets — so it only fires when the harvest is worth far more than the overhead. Pumps ride the swaps that trigger them. Heavy work can always go through the optional manual path with the caller's own gas.",
     },
     {
       q: "Can autonomy ever hurt a trader?",
@@ -476,7 +476,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "What role do arbitrageurs play in the buyback?",
-      a: "None — and that's the point. Designs that move a reference price rely on arbitrageurs to realign the market, paying them a spread on every cycle. Pump and shield execute at the pool's exact tick math inside the trade itself, so no gap opens and no value leaks to third parties.",
+      a: "None — and that's the point. Designs that move a reference price rely on arbitrageurs to realign the market, paying them a spread on every cycle. The pump executes at the pool's exact tick math inside the trade itself, so no gap opens and no value leaks to third parties.",
     },
     {
       q: "Can the pot be drained by whoever controls it?",
@@ -488,7 +488,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Does the autonomous buyback ever front-run or sandwich its own traders?",
-      a: "It can't — it has no separate transaction to place. Pump executes inside the buy, shield inside the sell, atomically. There's no pending buyback order in the mempool to trade around, and the trader's own amounts are never touched.",
+      a: "It can't — it has no separate transaction to place. The pump executes inside the swap that unlocked it, atomically. There's no pending buyback order in the mempool to trade around, and the trader's own amounts are never touched.",
     },
   ],
   "autonomous-compounding": [
@@ -576,7 +576,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "How do I read my program's health?",
-      a: "programOf(id) shows the position, shares and carry; potOf(id) the war chest; owedOf/parkedOf/heldOf the ledgers; quotePump/quoteShield the live defense. All views, all free.",
+      a: "programOf(id) shows the position, shares and carry; potOf(id) the war chest; owedOf/parkedOf/heldOf the ledgers; quotePump/pumpShareOf/deliveredCumOf the live machine. All views, all free.",
     },
   ],
   liquidity: [
@@ -608,7 +608,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "How do I read the machine before acting?",
-      a: "quotePump(key, buySize) and quoteShield(key, sellSize) are free views returning the spend/output the machine WOULD do — size your logic against them, no oracle involved.",
+      a: "quotePump(key, demand) and pumpShareOf(poolId) are free views returning the spend/output and the live gate the machine WOULD use — size your logic against them, no oracle involved.",
     },
     {
       q: "Can I build buy-pressure logic without holding a role?",
@@ -616,11 +616,11 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "How do I find the hook on a new chain?",
-      a: "Same address everywhere: 0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8. Hardcode it once, gate by chainId if you must, and the integration ports across all 18 networks.",
+      a: "Same address everywhere: 0xbB021554C5294328b04fa313669715bD201BA040. Hardcode it once, gate by chainId if you must, and the integration ports across all 18 networks. V1 and V2 still serve live pools at their own addresses.",
     },
     {
       q: "What events should my indexer watch?",
-      a: "The harvest event for fee flows, the delivery events for pump/shield/burn output (each carries its mode), and the pot events for donations. Everything the machine does is reconstructible from logs.",
+      a: "The harvest event for fee flows, HarvestRecorded for native engines, the delivery events for pump/burn output (each carries its mode), and the pot events for donations. Everything the machine does is reconstructible from logs.",
     },
   ],
   "build-apps": [
@@ -648,7 +648,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
   api: [
     {
       q: "Which functions mutate and which are free views?",
-      a: "Mutating: launchPool, initPot, addLiquidity(+Advanced), addProgramLiquidity, removeLiquidity, harvest, donate, claim, flushDirect and the setters. Views: potOf, programOf, quotePump, quoteShield, owedOf, parkedOf, heldOf, obligationOf and friends.",
+      a: "Mutating: launchPool, initPot, addLiquidity(+Advanced), addProgramLiquidity, removeLiquidity, harvest, donate, claim, flushDirect and the setters. Views: potOf, programOf, quotePump, pumpShareOf, deliveredCumOf, owedOf, parkedOf, heldOf, obligationOf and friends.",
     },
     {
       q: "Who may call what?",

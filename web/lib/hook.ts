@@ -1,6 +1,15 @@
 import { encodeAbiParameters, keccak256, zeroAddress, type Address, type Hex } from "viem";
+import { CANONICAL_HOOK } from "./chains";
+import { glueHookAbi as glueHookAbiV3 } from "./abi.v3";
+import { glueHookAbi as glueHookAbiV2 } from "./abi.v2";
 
-export { glueHookAbi } from "./abi";
+export { glueHookAbiV3, glueHookAbiV2 };
+/** Default ABI is the live V3 generation. Prefer `abiFor(hook)` at a pool's own address. */
+export const glueHookAbi = glueHookAbiV3;
+
+export function abiFor(hook: string) {
+  return hook.toLowerCase() === CANONICAL_HOOK.toLowerCase() ? glueHookAbiV3 : glueHookAbiV2;
+}
 
 // ---------------------------------------------------------------------------
 // Types mirroring the on-chain structs
@@ -14,13 +23,36 @@ export type PoolKey = {
   hooks: Address;
 };
 
-export type Pot = {
+/** V1/V2 pot — six fields, no reference / bucket. */
+export type PotV2 = {
   admin: Address;
   main: Address;
   secondary: Address;
   recipient: Address;
   configured: boolean;
   balance: bigint;
+};
+
+/** V3 pot — packed reference + spend bucket alongside the original six. */
+export type PotV3 = {
+  admin: Address;
+  main: Address;
+  pumpBucketTimestamp: number;
+  secondary: Address;
+  recipient: Address;
+  configured: boolean;
+  referenceTickX8: number;
+  lastTick: number;
+  lastTimestamp: number;
+  balance: bigint;
+};
+
+/** Normalized pot view used by the UI. V3 extras are undefined on V1/V2. */
+export type Pot = PotV2 & {
+  pumpBucketTimestamp?: number;
+  referenceTickX8?: number;
+  lastTick?: number;
+  lastTimestamp?: number;
 };
 
 export type ProgramConfig = {
@@ -36,7 +68,7 @@ export type ProgramConfig = {
   minSecondary: bigint;
 };
 
-export type Program = {
+export type ProgramV2 = {
   liquidity: bigint;
   tickLower: number;
   tickUpper: number;
@@ -57,9 +89,47 @@ export type Program = {
   carrySecondary: bigint;
 };
 
+export type ProgramV3 = ProgramV2 & {
+  armed: boolean;
+  native: boolean;
+};
+
+/** Normalized program view. `armed` / `native` are undefined on V1/V2. */
+export type Program = ProgramV2 & {
+  armed?: boolean;
+  native?: boolean;
+};
+
+export function asPotView(raw: PotV2 | PotV3): Pot {
+  const extra =
+    "referenceTickX8" in raw
+      ? {
+          pumpBucketTimestamp: Number(raw.pumpBucketTimestamp),
+          referenceTickX8: Number(raw.referenceTickX8),
+          lastTick: Number(raw.lastTick),
+          lastTimestamp: Number(raw.lastTimestamp),
+        }
+      : {};
+  return {
+    admin: raw.admin,
+    main: raw.main,
+    secondary: raw.secondary,
+    recipient: raw.recipient,
+    configured: raw.configured,
+    balance: raw.balance,
+    ...extra,
+  };
+}
+
+export function asProgramView(raw: ProgramV2 | ProgramV3): Program {
+  return {
+    ...raw,
+    armed: "armed" in raw ? raw.armed : undefined,
+    native: "native" in raw ? raw.native : undefined,
+  };
+}
+
 export const WAD = 10n ** 18n;
-/** afterSwap pump spend safety haircut: the pump uses at most 80% of the pot slice the buy unlocks */
-export const PUMP_HAIRCUT_WAD = (WAD * 80n) / 100n;
 
 // ---------------------------------------------------------------------------
 // PoolKey <-> poolId

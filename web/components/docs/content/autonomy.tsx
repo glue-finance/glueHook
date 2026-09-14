@@ -12,7 +12,7 @@ export function Autonomy() {
   return (
     <>
       <Lead>
-        Every mechanism in this book — the pot, pump, shield, the burn cascade, the fee split, the
+        Every mechanism in this book — the pot, the pump, the gate, the burn cascade, the fee split, the
         compound engine — shares one design constraint: <B>none of it needs a human to run</B>.
         Put together, they turn a Uniswap pool into something new: an LP whose tokenomics are a
         property of its own trading, not an activity someone performs on its behalf. This chapter
@@ -39,7 +39,7 @@ export function Autonomy() {
         head={["job", "who does it, classically", "who does it here"]}
         rows={[
           [<B key="a">buy the token back</B>, "treasury signer, market-maker mandate, buyback bot", <span key="r1">the pot, inside the buy — <a className="text-magenta underline" href="/docs/pump">Pump</a></span>],
-          [<B key="b">defend a sell-off</B>, "market maker on a retainer, team bids", <span key="r2">the pot, inside the sell — <a className="text-magenta underline" href="/docs/shield">Shield</a></span>],
+          [<B key="b">buy the dip</B>, "market maker on a retainer, team bids", <span key="r2">the pot, inside the sell — <a className="text-magenta underline" href="/docs/shield">Reference gate</a></span>],
           [<B key="c">burn supply</B>, "manual burns, announced and trusted", <span key="r3">the cascade, on every delivery — <a className="text-magenta underline" href="/docs/delivery">Burn &amp; delivery</a></span>],
           [<B key="d">collect LP fees</B>, "a keeper network or a weekly multisig call", <span key="r4">the in-swap auto-harvest — <a className="text-magenta underline" href="/docs/harvest">Auto-harvest</a></span>],
           [<B key="e">compound the position</B>, "a vault protocol charging a performance fee", <span key="r5">the compound engine, natively — <a className="text-magenta underline" href="/docs/compound">Autocompound</a></span>],
@@ -58,7 +58,7 @@ export function Autonomy() {
           { label: "LP fees accrue on both sides of the program's position" },
           { label: "auto-harvest fires in-swap once the minimums are met", hot: true },
           { label: "compound share → deeper liquidity · buyback share → the pot · burn share → destroyed · rest → recipients", hot: true },
-          { label: "the pot pumps on buys and shields sells — its purchases burn or deliver", hot: true },
+          { label: "the pot pumps behind every swap — its purchases burn or deliver", hot: true },
           { label: "deeper liquidity + lower supply → more attractive pool → more volume", note: "back to the top" },
         ]}
       />
@@ -135,7 +135,7 @@ export function AutonomousBuyback() {
     <>
       <Lead>
         A buyback is the most wanted — and most manual — instrument in tokenomics. This chapter
-        counts what a classical buyback quietly depends on, then shows how pump and shield delete
+        counts what a classical buyback quietly depends on, then shows how the pump deletes
         every dependency: the trigger, the price, the funding, the execution and the delivery all
         live inside the pool, so the buyback runs whether or not anybody shows up to run it.
       </Lead>
@@ -159,22 +159,20 @@ export function AutonomousBuyback() {
       <H2>Five dependencies, five deletions</H2>
       <H3>The trigger is the trade itself</H3>
       <P>
-        Pump fires <B>inside the buy</B>: the swap that pushes the price is the same transaction
-        in which the pot buys behind it. Shield fires <B>inside the sell</B>: the pot absorbs the
-        order in the very frame it lands. There is no schedule to keep and no signal to watch —
+        Pump fires <B>inside the swap</B>: the trade that moves the price is the same transaction
+        in which the pot buys behind it. There is no schedule to keep and no signal to watch —
         the market event and the response are one atomic thing. That atomicity is also the MEV
         answer: there is no gap between &quot;decision&quot; and &quot;execution&quot; for a
         sandwich to open. The mechanics live in{" "}
         <a className="text-magenta underline" href="/docs/pump">Pump</a> and{" "}
-        <a className="text-magenta underline" href="/docs/shield">Shield</a>.
+        <a className="text-magenta underline" href="/docs/shield">Reference gate</a>.
       </P>
       <H3>The price is the curve itself</H3>
       <P>
         The pot never asks what the token is worth — it trades against the pool&apos;s own tick
-        math, which <B>is</B> the price. No oracle exists to manipulate, and no reference price
-        needs an arbitrageur to enforce it. A shielded seller receives the pool&apos;s <B>exact</B>{" "}
-        output, fee and tick impact included, so there is no spread for a third party to harvest —
-        the value that classical designs leak to arbitrageurs stays in the pot.
+        math, which <B>is</B> the price. No oracle exists to manipulate. The 10-minute EMA is a
+        gate on how much of a swap the pot may match, not a price the market has to chase. The
+        seller always hits the curve; the pot is a standing buy behind them.
       </P>
       <H3>The funding is structural</H3>
       <Code title="how the pot stays full with no treasury operations">
@@ -212,9 +210,9 @@ export function AutonomousBuyback() {
       <T
         head={["scenario", "classical buyback", "hooked pool"]}
         rows={[
-          ["the team disappears", "buybacks end silently", "pump & shield keep firing on every qualifying trade — the pot spends itself down defending the pool, and keeps refueling from fees"],
-          ["the bot's key leaks", "treasury drained at market", "there is no key: the pot can only ever spend on buying or defending its own pool — no function exists to withdraw it"],
-          ["a volatile night, 3am", "nobody is awake to bid", "shield absorbs the sells in the sells themselves, at the pool's exact price, with no reaction latency"],
+          ["the team disappears", "buybacks end silently", "the pump keeps firing on every qualifying trade — the pot spends itself down, and keeps refueling from fees"],
+          ["the bot's key leaks", "treasury drained at market", "there is no key: the pot can only ever spend on buying its own pool — no function exists to withdraw it"],
+          ["a volatile night, 3am", "nobody is awake to bid", "the pump buys the dip inside the sell itself, gated so it cannot be farmed"],
           ["the community wants to help", "send funds to a multisig and hope", "donate(key, amount) — permissionless, irreversible, working the moment it lands"],
           ["the operator surrenders", "n/a — someone must keep signing", "the split freezes and the machine runs the frozen policy forever"],
         ]}
@@ -222,11 +220,10 @@ export function AutonomousBuyback() {
 
       <Callout tone="good" title="the seller loses nothing, the trader risks nothing">
         <p>
-          Autonomy would be worthless if it taxed the market that powers it. A shielded seller
-          receives <B>precisely</B> what the pool&apos;s math owes them; a pump rides a buy without
-          touching the buyer&apos;s amounts; every hook action is fault-tolerant, so a weird token
-          or an empty pot degrades to a no-op while the swap completes untouched. The machine
-          defends the pool without ever standing in front of a trade.
+          Autonomy would be worthless if it taxed the market that powers it. A pump rides a swap
+          without touching the trader&apos;s amounts; every hook action is fault-tolerant, so a
+          weird token or an empty pot degrades to a no-op while the swap completes untouched. The
+          machine defends the pool without ever standing in front of a trade.
         </p>
       </Callout>
 

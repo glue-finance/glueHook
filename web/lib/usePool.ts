@@ -6,7 +6,8 @@ import { erc20Abi, zeroAddress, type Address, type Hex } from "viem";
 import type { Net } from "./chains";
 import { clientForNet } from "./client";
 import { fetchPoolEvents, resolveTimestamps, type PoolEvent } from "./events";
-import { glueHookAbi, isNative, type PoolKey, type Pot, type Program } from "./hook";
+import { abiFor, asPotView, asProgramView, isNative, type PoolKey, type Pot, type Program } from "./hook";
+import { isCanonicalHook } from "./chains";
 import { importPool, scanPools, type RegisteredPool } from "./registry";
 
 // ---------------------------------------------------------------------------
@@ -63,12 +64,14 @@ export function usePot(net: Net, poolId: Hex | null, hook?: Address) {
     refetchInterval: 12_000,
     queryFn: async (): Promise<Pot> => {
       const client = clientForNet(net);
-      return (await client.readContract({
-        address: at,
-        abi: glueHookAbi,
-        functionName: "potOf",
-        args: [poolId!],
-      })) as Pot;
+      return asPotView(
+        (await client.readContract({
+          address: at,
+          abi: abiFor(at),
+          functionName: "potOf",
+          args: [poolId!],
+        })) as Parameters<typeof asPotView>[0],
+      );
     },
   });
 }
@@ -81,12 +84,14 @@ export function useProgram(net: Net, poolId: Hex | null, hook?: Address) {
     refetchInterval: 12_000,
     queryFn: async (): Promise<Program> => {
       const client = clientForNet(net);
-      return (await client.readContract({
-        address: at,
-        abi: glueHookAbi,
-        functionName: "programOf",
-        args: [poolId!],
-      })) as Program;
+      return asProgramView(
+        (await client.readContract({
+          address: at,
+          abi: abiFor(at),
+          functionName: "programOf",
+          args: [poolId!],
+        })) as Parameters<typeof asProgramView>[0],
+      );
     },
   });
 }
@@ -96,11 +101,10 @@ export function useProgram(net: Net, poolId: Hex | null, hook?: Address) {
 // ---------------------------------------------------------------------------
 
 /**
- * The pot's attack / defense curves, quoted by the hook's own views.
- * UNITS MATTER: `quotePump` speaks SECONDARY on both axes (the carrying buy's
- * input and the pot's spend), but `quoteShield` speaks MAIN (the sell being
- * absorbed) — so the shield probes are the pot's balance TRANSLATED into
- * main-side sizes through the pool's live price.
+ * The pot's attack curve, quoted by the hook's own views.
+ * UNITS: `quotePump` speaks SECONDARY on both axes (the carrying buy's
+ * input and the pot's spend). V1/V2 also expose `quoteShield` (MAIN units);
+ * V3 dropped the shield — the same probes return an empty defense curve.
  */
 export function useQuoteCurves(
   net: Net,
@@ -124,26 +128,17 @@ export function useQuoteCurves(
       const client = clientForNet(net);
       const bal = potBalance!;
       const steps = [1n, 2n, 5n, 10n, 25n, 50n, 100n, 250n, 500n];
+      const at = key!.hooks as Address;
+      const abi = abiFor(at);
 
-      // pump probes: SECONDARY buy sizes around the pot's own (secondary) scale
       const pumpSizes = steps.map((m) => (bal * m) / 100n);
-
-      // shield probes: the same scale ladder converted to MAIN raw units at the
-      // pool's live price — raw main per raw secondary
-      const r = Number(sqrtPriceX96!) / 2 ** 96;
-      const rawMainPerRawSec = mainIs0 ? 1 / (r * r) : r * r;
-      const shieldSizes = pumpSizes.map((s) => {
-        const v = Number(s) * rawMainPerRawSec;
-        return isFinite(v) && v >= 1 ? BigInt(Math.round(v)) : 1n;
-      });
 
       const pump = await Promise.all(
         pumpSizes.map(async (s) => {
           try {
             const [spend, out] = (await client.readContract({
-              // the key names its own hook — V1 pools quote off the V1 hook
-              address: key!.hooks as Address,
-              abi: glueHookAbi,
+              address: at,
+              abi,
               functionName: "quotePump",
               args: [key!, s],
             })) as [bigint, bigint];
@@ -153,12 +148,23 @@ export function useQuoteCurves(
           }
         }),
       );
+
+      if (isCanonicalHook(at)) {
+        return { pump, shield: [] as { size: bigint; absorbed: bigint; paid: bigint }[] };
+      }
+
+      const r = Number(sqrtPriceX96!) / 2 ** 96;
+      const rawMainPerRawSec = mainIs0 ? 1 / (r * r) : r * r;
+      const shieldSizes = pumpSizes.map((s) => {
+        const v = Number(s) * rawMainPerRawSec;
+        return isFinite(v) && v >= 1 ? BigInt(Math.round(v)) : 1n;
+      });
       const shield = await Promise.all(
         shieldSizes.map(async (s) => {
           try {
             const [absorbed, paid] = (await client.readContract({
-              address: key!.hooks as Address,
-              abi: glueHookAbi,
+              address: at,
+              abi,
               functionName: "quoteShield",
               args: [key!, -s],
             })) as [bigint, bigint];
@@ -169,6 +175,43 @@ export function useQuoteCurves(
         }),
       );
       return { pump, shield };
+    },
+  });
+}
+
+export function usePumpShare(net: Net, poolId: Hex | null, hook?: Address) {
+  const at = hook ?? net.hook;
+  return useQuery({
+    queryKey: ["pumpShare", net.chain.id, poolId, at],
+    enabled: !!poolId && isCanonicalHook(at),
+    refetchInterval: 12_000,
+    queryFn: async () => {
+      const client = clientForNet(net);
+      const [shareWad, spotTick, referenceTick] = (await client.readContract({
+        address: at,
+        abi: abiFor(at),
+        functionName: "pumpShareOf",
+        args: [poolId!],
+      })) as [bigint, number, number];
+      return { shareWad, spotTick, referenceTick };
+    },
+  });
+}
+
+export function useDeliveredCum(net: Net, poolId: Hex | null, asset: Address | undefined, hook?: Address) {
+  const at = hook ?? net.hook;
+  return useQuery({
+    queryKey: ["deliveredCum", net.chain.id, poolId, asset, at],
+    enabled: !!poolId && !!asset && isCanonicalHook(at),
+    refetchInterval: 12_000,
+    queryFn: async () => {
+      const client = clientForNet(net);
+      return (await client.readContract({
+        address: at,
+        abi: abiFor(at),
+        functionName: "deliveredCumOf",
+        args: [poolId!, asset!],
+      })) as bigint;
     },
   });
 }

@@ -142,7 +142,7 @@ export function SettingsBox({
         {section === "donate" && (
           <Donate net={net} poolKey={key} pot={pot} sec={sec.data} me={address} />
         )}
-        {section === "info" && <ProgramInfo net={net} pot={pot} program={program} />}
+        {section === "info" && <ProgramInfo net={net} pot={pot} program={program} pool={pool} />}
       </div>
     </div>
   );
@@ -466,7 +466,7 @@ function Manage({
     return (
       <p className="mono text-[12px] leading-relaxed text-dim2">
         no LP program on this pool yet — create one in the add tab. the pot
-        (donations, pump, shield) works regardless.
+        (donations, pump) works regardless.
       </p>
     );
   }
@@ -779,7 +779,7 @@ function Donate({
     <div className="space-y-4">
       <p className="mono text-[11.5px] leading-relaxed text-dim2">
         donations fuel the pot in the SECONDARY currency ({sec?.symbol ?? "…"}).
-        the pot spends them pumping buys and shielding sells — permissionless,
+        the pot spends them pumping buys — permissionless,
         anyone can fuel any pool.
       </p>
       <AmountBox

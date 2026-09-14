@@ -34,7 +34,7 @@ export function WhatIs() {
           {
             t: "Buy back",
             c: "var(--t-magenta)",
-            d: "A permissionless pot pumps every buy and shields every sell — priced by the pool's own arithmetic, un-sandwichable by construction.",
+            d: "A permissionless pot buys more main behind every swap — priced by the pool's own arithmetic, un-sandwichable by construction.",
             href: "/docs/the-pot",
           },
           {
@@ -65,15 +65,14 @@ export function WhatIs() {
         ))}
       </div>
 
-      <H2>One pool, one pot, two mechanics</H2>
+      <H2>One pool, one pot, one pump</H2>
       <P>
         Every pool that adopts the hook gets a <B>pot</B>: a permissionless war chest denominated in
         the pool&apos;s buyback currency. Anyone can fuel it — the token team, a protocol treasury,
-        a community member, another contract. The pot spends itself through two mechanics, both
-        triggered by ordinary traders doing what they came to do:
+        a community member, another contract. The pot spends itself behind ordinary swaps:
       </P>
       <Cols>
-        <Panel label="pump — on buys">
+        <Panel label="pump — behind a buy">
           <Flow
             items={[
               { label: "someone buys the token" },
@@ -85,16 +84,16 @@ export function WhatIs() {
             buyers amplify the up-move — sized so it can never be sandwiched.
           </p>
         </Panel>
-        <Panel label="shield — on sells">
+        <Panel label="pump — behind a sell">
           <Flow
             items={[
               { label: "someone sells the token" },
-              { label: "the pot absorbs it at the pool's exact price", hot: true },
-              { label: "the pool's price does not move", hot: true },
+              { label: "the pot buys the dip in the same tx", hot: true },
+              { label: "bought tokens → recipient or burn", hot: true },
             ]}
           />
           <p className="mono mt-3 text-[11px] leading-relaxed text-dim2">
-            sellers get exactly what the pool would have paid — supply never hits the curve.
+            sells still execute on the curve; the pot is a standing buy, gated so it cannot be farmed.
           </p>
         </Panel>
       </Cols>
@@ -124,8 +123,8 @@ export function WhatIs() {
       <T
         head={["surface", "what happens instead of a revert"]}
         rows={[
-          [<B key="p">the pump</B>, <span key="v1">runs in a <C>try/catch</C> self-call — a state that would revert the buyback <B>skips the pump</B>, the buyer&apos;s swap lands untouched</span>],
-          [<B key="s">the shield</B>, "quotes zeros when the pot is empty, unconfigured, or a leg rounds to nothing — the sell simply executes through the pool as normal"],
+          [<B key="p">the pump</B>, <span key="v1">runs in a <C>try/catch</C> self-call — a state that would revert the buyback <B>skips the pump</B>, the swapper&apos;s swap lands untouched</span>],
+          [<B key="g">the gate</B>, "an empty pot, a drained bucket, or a premium above the 10-min EMA simply quotes a zero spend — the swap executes through the pool as normal"],
           [<B key="h">auto-harvest</B>, "runs under a hard gas budget; a heavy run reverts atomically inside its own frame, fees stay pending, the swap completes"],
           [<B key="d">deliveries & payouts</B>, <span key="v4">a refused transfer <B>parks</B> or is <B>booked as owed</B> — retryable and claimable later, never blocking the carrying trade</span>],
         ]}
@@ -144,7 +143,7 @@ export function WhatIs() {
         items={[
           { label: "launchPool — pool + pot + seeded LP program, ONE transaction", hot: true },
           { label: "donate — anyone fuels the pot, any time" },
-          { label: "trade — every buy pumps, every sell is shielded", hot: true },
+          { label: "trade — every swap can pump, gated so the pot is unplayable", hot: true },
           { label: "harvest — fees split & compound automatically inside swaps" },
           { label: "surrender (optional) — lock the LP or freeze the rules forever", note: "trustless endgame" },
         ]}
@@ -154,7 +153,7 @@ export function WhatIs() {
       <LinkCards
         items={[
           { href: "/docs/quick-start", title: "Quick start", body: "Launch a hooked pool from the app in one transaction, or plug into an existing one." },
-          { href: "/docs/the-pot", title: "Understand the machine", body: "MAIN, SECONDARY, the pot, the pump, the shield — chapter by chapter." },
+          { href: "/docs/the-pot", title: "Understand the machine", body: "MAIN, SECONDARY, the pot, the pump, the gate — chapter by chapter." },
           { href: "/docs/integrate", title: "Integrate buybacks", body: "Your contract donates, the market executes. Oracle-free, in a dozen lines." },
           { href: "/docs/build-apps", title: "Build on top", body: "Launchpads, lockers and vaults that compose on the hook's roles." },
         ]}
@@ -177,7 +176,7 @@ export function WhatIs() {
       </Faq>
       <Faq q="Who can trigger the machine?">
         <p>
-          Nobody has to. The pump and the shield fire inside ordinary swaps; the auto-harvest fires
+          Nobody has to. The pump fires inside ordinary swaps; the auto-harvest fires
           inside ordinary swaps once fees pass your minimums. Manual entries (<C>harvest</C>,{" "}
           <C>flushDirect</C>, <C>claim</C>) exist as permissionless or role-gated fallbacks.
         </p>
@@ -224,8 +223,8 @@ export function Why() {
         The trade-off is stated plainly: the mechanism narrows <B>who decides when</B> — nobody
         decides, the market does — which removes discretionary control, and in exchange it
         automates the buyback on the users&apos; <B>own financial incentives</B>. Buyers trigger
-        pumps because buying is what they came to do; sellers trigger the shield because selling is
-        what they came to do.
+        pumps because buying is what they came to do; sellers trigger the same pump because selling
+        is what they came to do.
       </P>
 
       <H2>The second gap: fees that never compound</H2>
@@ -248,11 +247,11 @@ export function Why() {
 
       <H2>Why a V4 hook and not a wrapper or a router</H2>
       <P>
-        Only a hook executes <B>inside</B> the swap: the shield needs to intercept the sell before
-        the pool prices it (<C>beforeSwap</C>), and the pump needs to ride the buy that unlocked it
-        (<C>afterSwap</C>). A router can be bypassed; a wrapper fragments liquidity. The hook is
-        part of the pool&apos;s identity — every venue, aggregator and bot that routes through the
-        pool feeds the machine, whether it knows it or not.
+        Only a hook executes <B>inside</B> the swap: the pump rides the trade that unlocked it
+        (<C>afterSwap</C>), so there is no separate transaction to front-run. A router can be
+        bypassed; a wrapper fragments liquidity. The hook is part of the pool&apos;s identity —
+        every venue, aggregator and bot that routes through the pool feeds the machine, whether it
+        knows it or not.
       </P>
     </>
   );
@@ -372,21 +371,36 @@ export function Networks() {
       </Lead>
 
       <Code title="canonical addresses — every network, no exceptions">
-        GlueHook{"       "}<span className="g">0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</span>{"\n"}
-        GlueLiquidity{"  "}<span className="g">0x74EcCF857176CB538AAB1642A972444857f7860F</span>
+        GlueHook{"       "}<span className="g">0xbB021554C5294328b04fa313669715bD201BA040</span>{"\n"}
+        GlueLiquidity{"  "}<span className="g">0xFAc051590a9F2c2AC4838c88F5754591Df194bc5</span>
       </Code>
 
       <AddressesTable />
 
+      <H2>Generations</H2>
+      <T
+        head={["generation", "hook", "bits", "status"]}
+        rows={[
+          [<B key="v3">V3</B>, <C key="a3">0xbB02…A040</C>, <C key="b3">0x2040</C>, "canonical — new pools, Glue engines"],
+          ["V2", <C key="a2">0x0F41…20c8</C>, <C key="b2">0x20C8</C>, "legacy — live pools still served"],
+          ["V1", <C key="a1">0xb216…60C8</C>, <C key="b1">0x20C8</C>, "legacy — live pools still served"],
+        ]}
+      />
+      <P>
+        V3 is bound at compile time to GlueStick <C>0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b</C>.
+        Permission bits <C>0x2040</C> mean <C>beforeInitialize</C> + <C>afterSwap</C> only — no
+        swap-delta flags, so aggregator quotes are exact.
+      </P>
+
       <H2 id="address-is-permission">The address IS the permission</H2>
       <P>
         Uniswap V4 encodes a hook&apos;s permissions in the <B>low 14 bits of its address</B>. The
-        hook&apos;s address carries exactly the four flags it needs:
+        hook&apos;s address carries exactly the two flags it needs:
       </P>
       <Code>
-        beforeInitialize | beforeSwap | afterSwap | beforeSwapReturnsDelta{"  "}={"  "}
-        <span className="l">0x20C8</span>{"\n\n"}
-        <span className="c">{"// 0x…60C8 & 0x3FFF == 0x20C8 — check it yourself"}</span>
+        beforeInitialize | afterSwap{"  "}={"  "}
+        <span className="l">0x2040</span>{"\n\n"}
+        <span className="c">{"// 0x…A040 & 0x3FFF == 0x2040 — check it yourself"}</span>
       </Code>
       <P>
         The deployer key was <B>mined</B> so that its second-ever transaction (nonce 1) lands on an
@@ -406,8 +420,8 @@ export function Networks() {
       <H2>Verifying you&apos;re talking to the real hook</H2>
       <Steps
         items={[
-          { title: "Check the address", body: <>It must be exactly <C>0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</C> — on every network.</> },
-          { title: "Check the flag bits", body: <>The low 14 bits must equal <C>0x20C8</C>.</> },
+          { title: "Check the address", body: <>It must be exactly <C>0xbB021554C5294328b04fa313669715bD201BA040</C> — on every network.</> },
+          { title: "Check the flag bits", body: <>The low 14 bits must equal <C>0x2040</C>.</> },
           { title: "Check the source", body: <>Every deployment is source-verified; diff it against the repository if you like.</> },
         ]}
       />

@@ -167,33 +167,33 @@ export function BurnVisual() {
 export function ShieldVisual() {
   const W = 300;
   const H = 120;
-  // pool price path without shield (drops on sell) vs with shield (flat)
-  const withShield = "M0,40 L110,40 L150,40 L300,40";
+  // sell drops the price; the pot buys the dip in the same tx
+  const withPump = "M0,40 L110,40 L140,72 L175,52 L300,52";
   const without = "M0,40 L110,40 L150,78 L300,78";
   return (
-    <Card title="beforeSwap — shield">
+    <Card title="afterSwap — pump on sells">
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full">
         <line x1="0" y1="40" x2={W} y2="40" stroke="rgba(23,181,18,.12)" strokeDasharray="4 5" />
         <path d={without} fill="none" stroke="#e23a3a" strokeWidth="2" strokeDasharray="5 5" opacity="0.7" />
-        <path d={withShield} fill="none" stroke="#00987f" strokeWidth="2.5" />
-        <circle cx="130" cy="40" r="5" fill="#00987f">
+        <path d={withPump} fill="none" stroke="#00987f" strokeWidth="2.5" />
+        <circle cx="160" cy="58" r="5" fill="#00987f">
           <animate attributeName="r" values="4;7;4" dur="1.8s" repeatCount="indefinite" />
         </circle>
-        <text x="136" y="28" fill="#00987f" fontSize="10" fontFamily="monospace">
-          sell absorbed by pot
+        <text x="166" y="46" fill="#00987f" fontSize="10" fontFamily="monospace">
+          pot buys the dip
         </text>
         <text x="294" y="95" textAnchor="end" fill="#e23a3a" fontSize="10" fontFamily="monospace" opacity="0.8">
-          price without shield
+          sell with no pot
         </text>
         <text x="8" y="106" fill="#8b93a8" fontSize="9" fontFamily="monospace">
-          seller gets the pool&apos;s EXACT price
+          the seller still hits the curve
         </text>
         <text x="8" y="117" fill="#8b93a8" fontSize="9" fontFamily="monospace">
-          — fee and tick impact included
+          — the pot is a gated standing buy
         </text>
       </svg>
       <div className="mt-3 flex gap-2">
-        <span className="pill teal">price does not move</span>
+        <span className="pill teal">gated by the 10-min EMA</span>
         <span className="pill">pot receives the MAIN</span>
       </div>
     </Card>
@@ -378,16 +378,16 @@ export function IntegrateVisual() {
         {"\n"}
         (spend, out) = <span className="g">hook</span>.quotePump(key, buySize);
         {"\n"}
-        (absorb, paid) = <span className="g">hook</span>.quoteShield(key, sellSize);
+        (share, spot, ref) = <span className="g">hook</span>.pumpShareOf(poolId);
         {"\n\n"}
         <span className="c">{"// same address on every chain"}</span>
         {"\n"}
-        <span className="t">0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8</span>
+        <span className="t">0xbB021554C5294328b04fa313669715bD201BA040</span>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <span className="pill hi">contract-to-contract</span>
         <span className="pill hi">no price oracle</span>
-        <span className="pill teal">2 view quotes</span>
+        <span className="pill teal">gated views</span>
       </div>
     </Card>
   );

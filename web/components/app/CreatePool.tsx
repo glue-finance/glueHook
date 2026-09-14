@@ -8,7 +8,7 @@ import type { Net } from "@/lib/chains";
 import { fnum, ftoken, short } from "@/lib/format";
 import {
   FEE_TIERS,
-  glueHookAbi,
+  abiFor,
   isNative,
   fullRangeTicks,
   poolIdOf,
@@ -145,7 +145,7 @@ function useReferencePrice(net: Net, key: PoolKey | null, enabled: boolean) {
     refetchInterval: 30_000,
     queryFn: async () => {
       const candidates = FEE_TIERS.flatMap((t) =>
-        [net.hook, zeroAddress].map((hooks) => ({
+        [net.hook, ...net.legacy.map((g) => g.hook), zeroAddress].map((hooks) => ({
           fee: t.fee,
           tickSpacing: t.spacing,
           label: t.label,
@@ -400,7 +400,7 @@ export function CreatePool({
         try {
           live = (await clientForNet(net).readContract({
             address: net.hook,
-            abi: glueHookAbi,
+            abi: abiFor(net.hook),
             functionName: "programOf",
             args: [poolId!],
           })) as Program;

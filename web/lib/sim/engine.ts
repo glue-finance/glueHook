@@ -33,18 +33,17 @@
  * can never deliver more tokens than circulate, so a burn that eats the
  * float makes later dumps physically smaller — that IS the mechanism.
  *
- * Hook mechanics replayed 1:1 with the contract's rules:
- *  · PUMP   — on each buy, the pot spends alongside it, capped at 80% of
- *             the slice the buy unlocks (spend ≤ 80%·min(pot, buy size)).
- *             The pot's swap pays the pool fee like any other trade.
- *  · SHIELD — on each sell, the pot absorbs at the pool's EXACT execution
- *             price (fee included) up to its balance; the pool does not
- *             move for the absorbed part; the rest swaps through.
+ * Hook mechanics replayed 1:1 with the V3 contract's rules:
+ *  · PUMP   — behind EVERY swap (buy and sell), the pot spends secondary on
+ *             main. Spend is the smallest of four ceilings, then an 80%
+ *             haircut: fee·depth, the volume-paced bucket (k=4, 30 min refill),
+ *             a demand share of at most min(60%, f/premium) gated by a
+ *             10-minute EMA reference that may rise at most 296 ticks/min.
  *  · HARVEST — every trade harvests: the split runs, the compound share
  *             re-invests (currency-anchored, un-matched side carries).
  *
  * Without the hook: the same trades on the same curve — but fees are
- * never re-invested, there is no pot, no pump, no shield.
+ * never re-invested, there is no pot, no pump.
  */
 
 export type Scenario = "steady" | "meme" | "wave";
@@ -75,7 +74,7 @@ export type DayPoint = {
   pot: number;
   burned: number;
   pumped: number; // cumulative currency spent buying back
-  shielded: number; // cumulative currency paid absorbing sells
+  shielded: number; // unused (V3 has no shield); kept so SimLab series stay typed
   harvests: number;
   served: number; // cumulative currency volume executed
   servedBase: number;
@@ -187,14 +186,7 @@ function sell(pool: Pool, tokIn: number): number {
   const before = pool.sqrtP;
   const inv = 1 / pool.sqrtP + tokIn / pool.L;
   pool.sqrtP = 1 / inv;
-  // currency out
   return pool.L * (before - pool.sqrtP);
-}
-
-/** currency received for selling tokIn at the current state (no state change) */
-function quoteSell(pool: Pool, tokIn: number): number {
-  const inv = 1 / pool.sqrtP + tokIn / pool.L;
-  return pool.L * (pool.sqrtP - 1 / inv);
 }
 
 /** alternating trade slices per day — fine enough that a single slice is
@@ -209,6 +201,19 @@ function slicesFor(dayVol: number, curReserve: number): number {
   if (dayVol <= 0 || curReserve <= 0) return MIN_SLICES;
   const wanted = Math.ceil(dayVol / (0.02 * curReserve));
   return Math.min(MAX_SLICES, Math.max(MIN_SLICES, wanted));
+}
+
+const LN_TICK = Math.log(1.0001);
+const PUMP_K = 4;
+const PUMP_REFILL = 30 * 60;
+const PUMP_SHARE_MAX = 0.6;
+const PUMP_HAIRCUT = 0.8;
+const REF_TAU = 10 * 60;
+const REF_MAX_RISE_PER_MIN = 296;
+
+function tickOfSqrt(sqrtP: number): number {
+  const p = sqrtP * sqrtP;
+  return Math.log(Math.max(p, 1e-18)) / LN_TICK;
 }
 
 export function runSim(cfg: SimConfig): DayPoint[] {
@@ -258,6 +263,11 @@ export function runSim(cfg: SimConfig): DayPoint[] {
   // fees, the pot, the shield and the compounder stay alive through
   // every leg of the scenario
   const CAP = 0.8;
+
+  // V3 pump state — reference tick (x1, not x8) and spend bucket level (seconds)
+  let refTick = tickOfSqrt(sqrtP0);
+  let lastTick = refTick;
+  let bucketLevel = PUMP_REFILL;
 
   // HARVEST — runs on every trade, no minimums
   function harvest() {
@@ -346,9 +356,8 @@ export function runSim(cfg: SimConfig): DayPoint[] {
       }
 
       /* ---- hooked pool: the SAME story, plus the machine ----
-       * Same shape — round-trip churn + one net leg — but every buy
-       * carries the PUMP and every sell meets the SHIELD, exactly like
-       * the contract's beforeSwap/afterSwap. */
+       * Same shape — round-trip churn + one net leg — but every swap
+       * carries the PUMP, exactly like the contract's afterSwap. */
 
       // circulating stock, DERIVED from the conservation invariant.
       // Recipient tokens circulate (they're a wallet like any other);
@@ -358,64 +367,69 @@ export function runSim(cfg: SimConfig): DayPoint[] {
         SUPPLY - hook.L / hook.sqrtP - burned - feeTok - carryTok,
       );
 
-      // a buyer's swap: real price impact; the pot rides it (PUMP),
-      // capped at 80% of what the buy unlocks; the pot's swap pays the
-      // pool fee AND its own impact, and receives the curve's output
+      const dt = 86400 / SLICES;
+
+      const observe = () => {
+        const step = Math.min(dt, REF_TAU);
+        let move = ((lastTick - refTick) * step) / REF_TAU;
+        const maxRise = (REF_MAX_RISE_PER_MIN * dt) / 60;
+        if (move > maxRise) move = maxRise; // falls are never capped
+        refTick += move;
+      };
+
+      const pumpBehind = (demand: number) => {
+        if (demand <= 0 || pot <= 0) return;
+        observe();
+        const depth = hook.L * hook.sqrtP;
+        if (depth <= 0) return;
+        const feeCap = fee * depth;
+        const spot = tickOfSqrt(hook.sqrtP);
+        const above = spot - refTick; // token is main: dearer = higher tick
+        const premium = above <= 0 ? 0 : Math.pow(1.0001, above) - 1;
+        const share = premium <= 0 ? PUMP_SHARE_MAX : Math.min(PUMP_SHARE_MAX, fee / premium);
+        const volCredit = (PUMP_K * demand * PUMP_REFILL) / depth;
+        bucketLevel = Math.min(PUMP_REFILL, bucketLevel + dt + volCredit);
+        const budget = (feeCap * bucketLevel) / PUMP_REFILL;
+        const spend = PUMP_HAIRCUT * Math.min(pot, feeCap, share * demand, budget);
+        if (spend <= 0) {
+          lastTick = spot;
+          return;
+        }
+        pot -= spend;
+        pumped += spend;
+        feeCur += spend * fee;
+        const pumpTok = buy(hook, spend * (1 - fee));
+        if (cfg.burnAcquired) {
+          burned += pumpTok;
+          burnedCur += spend;
+        } else {
+          recTok += pumpTok;
+          recTokCur += spend;
+        }
+        bucketLevel = Math.max(0, ((budget - spend) * PUMP_REFILL) / feeCap);
+        lastTick = tickOfSqrt(hook.sqrtP);
+      };
+
       const buyLeg = (cur: number): number => {
         if (cur <= 0) return 0;
         feeCur += cur * fee;
         const tokOut = buy(hook, cur * (1 - fee));
         served += cur;
-        const spend = 0.8 * Math.min(pot, cur);
-        if (spend > 0) {
-          pot -= spend;
-          pumped += spend;
-          feeCur += spend * fee;
-          const pumpTok = buy(hook, spend * (1 - fee));
-          if (cfg.burnAcquired) {
-            burned += pumpTok;
-            burnedCur += spend;
-          } else {
-            recTok += pumpTok;
-            recTokCur += spend;
-          }
-        }
+        pumpBehind(cur);
         return tokOut;
       };
 
-      // a seller's swap: fee skimmed in tokens up front; the SHIELD
-      // absorbs at the pool's EXACT execution price (impact included) up
-      // to the pot — the pool does not move for the absorbed part; the
-      // remainder swaps through the curve for real
       const sellLeg = (tok: number) => {
         if (tok <= 0) return;
         const skim = tok * fee;
         feeTok += skim;
         o = Math.max(0, o - skim);
-        const net = tok - skim;
-        let absorbTok = 0;
-        if (pot > 0) {
-          const full = quoteSell(hook, net);
-          if (full > 0) {
-            absorbTok = net * Math.min(1, pot / full);
-            const pay = Math.min(pot, quoteSell(hook, absorbTok));
-            pot -= pay;
-            shielded += pay;
-            served += pay;
-            o = Math.max(0, o - absorbTok);
-            if (cfg.burnAcquired) {
-              burned += absorbTok;
-              burnedCur += pay;
-            } else {
-              recTok += absorbTok;
-              recTokCur += pay;
-            }
-          }
-        }
-        const rest = net - absorbTok;
+        const rest = tok - skim;
         if (rest > 0) {
-          served += sell(hook, rest);
+          const curOut = sell(hook, rest);
+          served += curOut;
           o = Math.max(0, o - rest);
+          pumpBehind(curOut);
         }
       };
 

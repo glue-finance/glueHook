@@ -3,11 +3,12 @@
 import { useMemo } from "react";
 import { formatUnits } from "viem";
 import type { Net } from "@/lib/chains";
+import { isCanonicalHook } from "@/lib/chains";
 import { burnedSeries, potSeries } from "@/lib/derive";
 import type { PoolEvent } from "@/lib/events";
 import { fnum, ftoken } from "@/lib/format";
 import type { Pot } from "@/lib/hook";
-import { useQuoteCurves, useTokenMeta } from "@/lib/usePool";
+import { usePumpShare, useQuoteCurves, useTokenMeta } from "@/lib/usePool";
 import { usePoolState } from "@/lib/usePoolState";
 import type { RegisteredPool } from "@/lib/registry";
 import { LineChart } from "./LineChart";
@@ -32,7 +33,9 @@ export function PotGauge({
   const mainSym = mainMeta.data?.symbol ?? "MAIN";
 
   const mainIs0 = !!pot && !!pool.key && pot.main === pool.key.currency0;
+  const v3 = isCanonicalHook(pool.hook);
   const curves = useQuoteCurves(net, pool.key, pot?.balance, state.data?.sqrtPriceX96, mainIs0);
+  const share = usePumpShare(net, pool.poolId, pool.hook);
 
   const balSeries = useMemo(() => {
     // series is built in raw units (event data is raw), displayed in tokens
@@ -83,7 +86,7 @@ export function PotGauge({
     <div className="panel">
       <div className="chead">
         <span>pot power</span>
-        <span className="pill hi" title="total spent on buybacks + sell defense">
+        <span className="pill hi" title="total spent on buybacks">
           {pot ? `${ftoken(totalDeployed, dec)} ${sym} deployed` : "…"}
         </span>
       </div>
@@ -131,27 +134,53 @@ export function PotGauge({
               empty={pot && pot.balance === 0n ? "pot is empty" : "quoting…"}
             />
             <p className="mono mt-1 px-1 text-[10px] leading-relaxed text-dim2">
-              {sym} the pot spends alongside a buy of a given size — the 80%
-              haircut and the buy-size cap flatten the top.
+              {sym} the pot spends alongside a buy of a given size — four
+              ceilings, then an 80% haircut.
             </p>
           </div>
-          <div>
-            <div className="label mb-2 text-teal">
-              defense — sell absorption capacity
+          {v3 ? (
+            <div>
+              <div className="label mb-2 text-teal">
+                reference gate — live share
+              </div>
+              <div className="rounded-xl border border-[var(--line)] bg-panel2 p-4">
+                <div className="mono text-[22px] font-extrabold text-teal">
+                  {share.data
+                    ? `${(Number(share.data.shareWad) / 1e16).toFixed(1)}%`
+                    : "…"}
+                </div>
+                <p className="mono mt-2 text-[11px] leading-relaxed text-dim">
+                  spot tick {share.data?.spotTick ?? "—"} · reference{" "}
+                  {share.data?.referenceTick ?? "—"}
+                  {pot?.referenceTickX8 !== undefined && (
+                    <> · stored x8 {pot.referenceTickX8}</>
+                  )}
+                </p>
+                <p className="mono mt-2 text-[10px] leading-relaxed text-dim2">
+                  60% at or below the 10-minute EMA; above it, fee/premium.
+                  The reference may fall freely and rise at most ~3%/min.
+                </p>
+              </div>
             </div>
-            <LineChart
-              series={[{ points: defense, color: "#00987f", fill: true }]}
-              height={120}
-              yFormat={fnum}
-              unit={mainSym}
-              empty={pot && pot.balance === 0n ? "pot is empty" : "quoting…"}
-            />
-            <p className="mono mt-1 px-1 text-[10px] leading-relaxed text-dim2">
-              {fullCover !== null && fullCover !== undefined
-                ? `sells up to ~${ftoken(fullCover, mainDec)} ${mainSym} are fully absorbed at the pool's exact price.`
-                : `${mainSym} the pot eats out of a sell before the rest hits the pool.`}
-            </p>
-          </div>
+          ) : (
+            <div>
+              <div className="label mb-2 text-teal">
+                defense — sell absorption capacity
+              </div>
+              <LineChart
+                series={[{ points: defense, color: "#00987f", fill: true }]}
+                height={120}
+                yFormat={fnum}
+                unit={mainSym}
+                empty={pot && pot.balance === 0n ? "pot is empty" : "quoting…"}
+              />
+              <p className="mono mt-1 px-1 text-[10px] leading-relaxed text-dim2">
+                {fullCover !== null && fullCover !== undefined
+                  ? `sells up to ~${ftoken(fullCover, mainDec)} ${mainSym} are fully absorbed at the pool's exact price.`
+                  : `${mainSym} the pot eats out of a sell before the rest hits the pool.`}
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </div>

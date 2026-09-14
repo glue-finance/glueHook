@@ -21,7 +21,7 @@ export const DOC_TREE: DocGroup[] = [
         slug: "",
         title: "What is GlueHook",
         short: "What is GlueHook",
-        blurb: "One hook, a pot per pool, buybacks and sell defense powered by the traffic itself.",
+        blurb: "One hook, a pot per pool, buybacks powered by the traffic itself.",
       },
       {
         slug: "why",
@@ -60,13 +60,13 @@ export const DOC_TREE: DocGroup[] = [
         slug: "pump",
         title: "Pump — the buyback",
         short: "Pump",
-        blurb: "How buys trigger buybacks inside their own transaction, and why it can't be sandwiched.",
+        blurb: "How every swap can trigger a buyback inside its own transaction, and why it can't be sandwiched.",
       },
       {
         slug: "shield",
-        title: "Shield — sell defense",
-        short: "Shield",
-        blurb: "Sells absorbed at the pool's exact price: the seller is indifferent, the price doesn't move.",
+        title: "Reference gate & pacing",
+        short: "The gate",
+        blurb: "A 10-minute EMA and a volume-paced bucket keep the pot unplayable. V1/V2 still shield sells.",
       },
       {
         slug: "delivery",
@@ -231,7 +231,7 @@ export const DOC_TREE: DocGroup[] = [
         slug: "security",
         title: "Security & audit",
         short: "Security",
-        blurb: "The threat model, the invariant catalogue, 127 tests, and what you actually trust.",
+        blurb: "The threat model, the invariant catalogue, 191 tests, and what you actually trust.",
       },
       {
         slug: "glossary",

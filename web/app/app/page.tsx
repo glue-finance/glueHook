@@ -306,7 +306,7 @@ function AppInner() {
             {mtab === "info" && (
               <div className="space-y-4">
                 <PoolDashboard net={net} pool={pool} pot={pot.data} />
-                <ProgramInfoCard net={net} pot={pot.data} program={program.data} />
+                <ProgramInfoCard net={net} pot={pot.data} program={program.data} pool={pool} />
                 <TradeTape
                   net={net}
                   events={feed.events}

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Hex } from "viem";
 import { useAccount } from "wagmi";
-import { MAINNETS, TESTNETS, type Net } from "@/lib/chains";
+import { MAINNETS, TESTNETS, tagOfHook, type Net } from "@/lib/chains";
 import { NetIcon } from "@/components/NetIcon";
 import { short } from "@/lib/format";
 import type { RegisteredPool } from "@/lib/registry";
@@ -119,6 +119,7 @@ function PoolRow({
       </span>
       <span className="mono flex items-center gap-2 text-[10.5px] text-dim2">
         {mine && <span className="pill hi">yours</span>}
+        <span className="pill">{tagOfHook(pool.hook).toUpperCase()}</span>
         {pool.key && <span className="pill">{(pool.key.fee / 10_000).toFixed(2)}%</span>}
         {short(pool.poolId)}
       </span>

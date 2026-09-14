@@ -55,7 +55,7 @@ export function FeesFlow() {
         head={["destination", "side", "what it does", "deep dive"]}
         rows={[
           [<B key="a">compound</B>, "both", "re-mints as liquidity in the program's own position; what doesn't fit carries", <a key="l1" className="text-magenta underline" href="/docs/compound">Autocompound</a>],
-          [<B key="b">buyback</B>, "secondary", "credits the pool's own pot — self-fueling pump & shield", <a key="l2" className="text-magenta underline" href="/docs/the-pot">The pot</a>],
+          [<B key="b">buyback</B>, "secondary", "credits the pool's own pot — self-fueling the pump", <a key="l2" className="text-magenta underline" href="/docs/the-pot">The pot</a>],
           [<B key="c">burn</B>, "main", "destroys the fees through the verified burn cascade", <a key="l3" className="text-magenta underline" href="/docs/lp-burn">The burn share</a>],
           [<B key="d">recipient</B>, "both (one each)", "receives the exact remainder — treasury, rewards, vesting, anything", <a key="l4" className="text-magenta underline" href="/docs/lp-recipients">The recipients</a>],
         ]}
@@ -125,7 +125,7 @@ export function FeesRecipients() {
           [
             <B key="a">pot recipient</B>,
             <span key="s1">the pot admin (<C>initPot</C> / <C>setRecipient</C>)</span>,
-            <span key="r1">the <B>main the pot buys and absorbs</B> — pumps and shields. <C>address(0)</C> = burn</span>,
+            <span key="r1">the <B>main the pot buys</B> on every pump. <C>address(0)</C> = burn</span>,
           ],
           [
             <B key="b">mainRecipient</B>,
@@ -351,9 +351,9 @@ export function FeesNeverStops() {
             <span key="v6"><C>try/catch</C> self-call — the pump is <B>skipped</B>, the buyer&apos;s swap lands untouched</span>,
           ],
           [
-            <B key="g">the shield (sell side)</B>,
-            "empty pot, unconfigured pot, a leg rounding to zero",
-            "quotes zeros and steps aside — the sell executes through the pool as a normal swap",
+            <B key="g">the pump (every swap)</B>,
+            "empty pot, drained bucket, a premium that zeros the share",
+            "quotes a zero spend and steps aside — the swap executes through the pool as a normal swap",
           ],
           [
             <B key="h">pot deliveries</B>,
@@ -392,7 +392,7 @@ export function FeesNeverStops() {
         execution and an occasional auto-harvest under its budget — and the minimums exist
         precisely so the program tunes that cost consciously (see{" "}
         <a className="text-magenta underline" href="/docs/harvest">How harvesting works</a>).
-        Trade-side guarantees like &quot;the shield pays pool-exact&quot; are proven wei-exact in
+        Trade-side guarantees like &quot;the pump never spends past the four ceilings&quot; are proven wei-exact in
         the{" "}
         <a className="text-magenta underline" href="/docs/security">test campaign</a>.
       </P>

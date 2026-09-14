@@ -4,6 +4,7 @@ The GlueHook site: landing page, live app (on-chain charts + LP management), sim
 
 - **Stack:** Next.js (App Router) + TypeScript + Tailwind v4 + wagmi/viem + RainbowKit.
 - **No backend:** all live data comes from public RPCs (`eth_getLogs` + view calls); scanned logs are cached in `localStorage`.
+- **Pool snapshot:** `lib/pools.snapshot.json` ships every known pool plus the block each chain was scanned to, so a fresh visitor only scans the blocks since the snapshot instead of the whole history. The scan then backfills V3 → V2 → V1 so the newest pools show first. Regenerate and commit after launching pools: `npm run pools:snapshot` (or `npm run pools:snapshot -- base robinhood`).
 - **Charts:** hand-rolled SVG (`components/app/LineChart.tsx`).
 - **Chains:** the 18 deployed networks live in `lib/chains.ts` (per-chain RPC overridable with `NEXT_PUBLIC_RPC_<chainId>`).
 - **Generations:** V3 (`0xbB02…A040`) is canonical — new pools, the app's create flow, Glue engines. V2 (`0x0F41…20c8`) and V1 (`0xb216…60C8`) stay served as legacy; reads and writes route through each pool's own `key.hooks`.

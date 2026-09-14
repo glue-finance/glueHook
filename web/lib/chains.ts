@@ -199,13 +199,16 @@ export const NETS: Net[] = [
   },
   {
     chain: optimism, slug: "optimism", label: "Optimism", testnet: false,
-    // publicnode first (50k here); mainnet.optimism.io rate-limits under scan load
-    rpcs: rpcsFor(10, "https://optimism-rpc.publicnode.com", "https://mainnet.optimism.io", "https://optimism.drpc.org"),
+    // mainnet.optimism.io + tenderly serve archive getLogs at 10k. publicnode
+    // now 403s history ("Archive requests require a personal token"), drpc
+    // free rejects every getLogs range — both kept for plain reads only
+    rpcs: rpcsFor(10, "https://mainnet.optimism.io", "https://optimism.gateway.tenderly.co", "https://optimism-rpc.publicnode.com", "https://optimism.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x9a13F98Cb987694C9F086b1F5eB990EeA8264Ec3",
     ...gens(156867928, 155925598, 155253116),
     explorer: "https://optimistic.etherscan.io",
     universalRouter: "0x851116d9223fabed8e56c0e6b8ad0c31d98b3507",
-    logRange: 50_000,
+    logRange: 10_000,
+    logEndpoints: 2,
   },
   {
     chain: bsc, slug: "bnb", label: "BNB Chain", testnet: false,
@@ -226,13 +229,17 @@ export const NETS: Net[] = [
   },
   {
     chain: polygon, slug: "polygon", label: "Polygon", testnet: false,
-    // publicnode 10k, drpc 100. polygon-rpc.com is GONE (401 "tenant disabled")
-    rpcs: rpcsFor(137, "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"),
+    // tenderly + quiknode serve archive getLogs at 10k. publicnode has PRUNED
+    // history older than a few weeks ("History has been pruned for this
+    // block") so it only works for recent reads; drpc free rejects getLogs.
+    // polygon-rpc.com is GONE (401 "tenant disabled")
+    rpcs: rpcsFor(137, "https://polygon.gateway.tenderly.co", "https://rpc-mainnet.matic.quiknode.pro", "https://polygon-bor-rpc.publicnode.com", "https://polygon.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x67366782805870060151383F4BbFF9daB53e5cD6",
     ...gens(93755100, 92496642, 91600016),
     explorer: "https://polygonscan.com",
     universalRouter: "0x1095692a6237d83c6a72f3f5efedb9a670c49223",
     logRange: 10_000,
+    logEndpoints: 2,
   },
   {
     chain: worldchain, slug: "worldchain", label: "World Chain", testnet: false,
@@ -286,13 +293,15 @@ export const NETS: Net[] = [
   },
   {
     chain: xLayer, slug: "xlayer", label: "X Layer", testnet: false,
-    // drpc 10k; rpc.xlayer.tech caps at 100 — read fallback
-    rpcs: rpcsFor(196, "https://xlayer.drpc.org", "https://rpc.xlayer.tech"),
+    // rpc.xlayer.tech/unlimited is the only public endpoint serving getLogs
+    // history (1k cap); plain rpc.xlayer.tech caps at 100, drpc free rejects
+    // every range. The crawl is long here — the snapshot + /api/pools carry it
+    rpcs: rpcsFor(196, "https://rpc.xlayer.tech/unlimited", "https://rpc.xlayer.tech", "https://xlayer.drpc.org"),
     hook: CANONICAL_HOOK, poolManager: "0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32",
     ...gens(70567241, 68681331, 67336132),
     explorer: "https://www.oklink.com/x-layer",
     universalRouter: "0xda00ae15d3a71466517129255255db7c0c0956d3",
-    logRange: 10_000,
+    logRange: 1_000,
   },
   {
     chain: sepolia, slug: "sepolia", label: "Sepolia", testnet: true,

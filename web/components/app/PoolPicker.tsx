@@ -136,7 +136,7 @@ export function PoolPicker({
   selected: RegisteredPool | null;
   onSelect: (p: RegisteredPool) => void;
 }) {
-  const { data: pools, isFetching, progress, importById, refetch } = usePoolList(net);
+  const { data: pools, isFetching, progress, stage, importById, refetch } = usePoolList(net);
   const { address: me } = useAccount();
   // your pools first — "yours" == the wallet that opened the pot (real Initialize data)
   const sorted = me
@@ -176,16 +176,33 @@ export function PoolPicker({
         </button>
       </div>
       <div className="space-y-1 p-2">
+        {sorted.map((p) => (
+          <PoolRow
+            key={p.poolId}
+            net={net}
+            pool={p}
+            selected={selected?.poolId === p.poolId}
+            mine={!!me && p.admin?.toLowerCase() === me.toLowerCase()}
+            onSelect={() => onSelect(p)}
+          />
+        ))}
         {isFetching && (
-          <div className={sorted.length > 0 ? "px-3 pb-2 pt-1" : "px-3 py-6"}>
+          // below the rows: V3 pools render first while V2/V1 history loads
+          <div className={sorted.length > 0 ? "px-3 pb-2 pt-2" : "px-3 py-6"}>
             <ScanBar
               progress={progress}
               label={
-                sorted.length === 0 && progress !== null && progress >= 99
-                  ? "loading pools…"
-                  : "scanning PotOpened logs…"
+                stage === "tip"
+                  ? "checking for new pools…"
+                  : stage
+                    ? `loading ${stage.toUpperCase()} pools…`
+                    : sorted.length === 0 && progress !== null && progress >= 99
+                      ? "loading pools…"
+                      : sorted.length > 0
+                        ? "checking for new pools…"
+                        : "scanning PotOpened logs…"
               }
-              note={sorted.length > 0 ? undefined : `reading ${net.label} history — cached after the first pass`}
+              note={sorted.length > 0 ? undefined : `reading recent ${net.label} blocks`}
               thin={sorted.length > 0}
             />
           </div>
@@ -197,16 +214,6 @@ export function PoolPicker({
             switch network if you launched elsewhere — or import a poolId below.
           </div>
         )}
-        {sorted.map((p) => (
-          <PoolRow
-            key={p.poolId}
-            net={net}
-            pool={p}
-            selected={selected?.poolId === p.poolId}
-            mine={!!me && p.admin?.toLowerCase() === me.toLowerCase()}
-            onSelect={() => onSelect(p)}
-          />
-        ))}
       </div>
       <div className="border-t border-[var(--line)] p-3">
         <div className="flex gap-2">

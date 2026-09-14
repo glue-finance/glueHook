@@ -19,4 +19,5 @@ scripts/*
 !scripts/run-external.sh
 web/scripts/*
 !web/scripts/gen-abi.mjs
+!web/scripts/snapshot-pools.mts
 /package.json

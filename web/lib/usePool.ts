@@ -8,7 +8,7 @@ import { clientForNet } from "./client";
 import { fetchPoolEvents, resolveTimestamps, type PoolEvent } from "./events";
 import { abiFor, asPotView, asProgramView, isNative, type PoolKey, type Pot, type Program } from "./hook";
 import { isCanonicalHook } from "./chains";
-import { importPool, scanPools, type RegisteredPool } from "./registry";
+import { importPool, scanPools, type RegisteredPool, type ScanStage } from "./registry";
 
 // ---------------------------------------------------------------------------
 // Pool registry
@@ -16,19 +16,26 @@ import { importPool, scanPools, type RegisteredPool } from "./registry";
 
 export function usePoolList(net: Net) {
   const [progress, setProgress] = useState<number | null>(null);
+  // which slice of history the crawl is on — "tip", then "v3", "v2", "v1"
+  const [stage, setStage] = useState<ScanStage | null>(null);
   const qc = useQueryClient();
   useEffect(() => {
     setProgress(null);
+    setStage(null);
   }, [net.chain.id]);
   const q = useQuery({
     queryKey: ["pools", net.chain.id],
     queryFn: async () => {
       setProgress(null);
+      setStage(null);
       const pools = await scanPools(
         net,
         // leave the last percent for ingest so the bar doesn't read "done"
-        // while getTransaction is still resolving each PotOpened log
-        (scanned, total) => setProgress(Math.min(99, Number((scanned * 99n) / total))),
+        // while the receipt lookups are still resolving each PotOpened log
+        ({ stage: s, scanned, total }) => {
+          setStage(s);
+          setProgress(total > 0n ? Math.min(99, Number((scanned * 99n) / total)) : null);
+        },
         (partial) => {
           if (partial.length > 0) {
             qc.setQueryData<RegisteredPool[]>(["pools", net.chain.id], partial);
@@ -36,6 +43,7 @@ export function usePoolList(net: Net) {
         },
       );
       setProgress(null);
+      setStage(null);
       return pools;
     },
     staleTime: 60_000,
@@ -49,7 +57,7 @@ export function usePoolList(net: Net) {
     },
     [net, qc],
   );
-  return { ...q, progress, importById };
+  return { ...q, progress, stage, importById };
 }
 
 // ---------------------------------------------------------------------------

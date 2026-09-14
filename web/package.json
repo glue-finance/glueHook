@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
-    "abi": "node scripts/gen-abi.mjs"
+    "abi": "node scripts/gen-abi.mjs",
+    "pools:snapshot": "tsx scripts/snapshot-pools.mts"
   },
   "dependencies": {
     "@rainbow-me/rainbowkit": "^2.2.11",
@@ -27,6 +28,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "tailwindcss": "^4.1.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.0"
   }
 }

@@ -131,6 +131,130 @@ cannot revert.
 - **The swapper pays the pump's gas.** Executing inline in `afterSwap` means there is no separate
   transaction to front-run.
 
+### The pump math — every play priced at a loss
+
+The constants, all fixed in the bytecode (`GlueLiquidity`):
+
+| Symbol | Value | Meaning |
+|---|---|---|
+| `R` | live | the pool's **tangent depth** at spot — the constant-product reserve a V4 pool behaves like at its current tick (`GluedV4Core.tangentReserve`) |
+| `f` | live | the pool's static fee as a fraction (`3000` → `0.003`) |
+| `B` | per swap | the **demand**: secondary the carrying swap moved — paid on a buy, received on a sell |
+| `d` | live | main's **premium** over the reference: `1.0001^Δ − 1` for the tick gap `Δ`, oriented so `d > 0` is a dearer main |
+| `s(d)` | `min(60%, f/d)` | the reference gate's share (`PUMP_SHARE_MAX_WAD = 0.6e18`) |
+| `k` | `4` | fee leverage of the spend bucket (`PUMP_FEE_LEVERAGE`) |
+| `T` | `30 min` | one full bucket refill by time alone (`PUMP_REFILL`) |
+| `τ` | `10 min` | time constant of the reference (`REFERENCE_TAU`) |
+| `ρ` | `296 ticks/min` | the reference's maximum rise, `1.0001^296 ≈ +3%` per minute (`REFERENCE_MAX_RISE_PER_MINUTE`) |
+| `h` | `0.8` | the haircut (`PUMP_HAIRCUT_BPS = 8000`) |
+
+Behind every swap of a funded pool the pot spends
+
+```
+spend = h · min( f·R ,  f·R · L/T ,  s(d) · B ,  pot balance )
+```
+
+where `L ∈ [0, T]` is the spend bucket's level, kept as *seconds of refill* in one packed timestamp.
+Each term below is one attack, the ceiling that closes it, and the algebra that shows the attacker
+strictly losing once the haircut lands.
+
+**1. The sandwich → the fee ceiling `f·R`.** A pump is a market buy that someone else's transaction
+triggers — the exact shape of a sandwich victim. Let the attacker buy `X` in front of a pump of size
+`V` and sell behind it, on a pool of depth `R`. Writing `u = X/R`, `v = V/R`, the constant-product
+algebra gives the attacker's gross profit exactly as
+
+```
+profit = R · u·v · (2 + u + v) / ((1 + u)² + u·v)      ≈  2·X·V / R   at leading order
+```
+
+and their cost is the fee on both legs, `2·f·X`. The attack pays iff `2·X·V/R > 2·f·X`, i.e.
+**iff `V > f·R`** — the attacker's own size `X` cancels out entirely. So a single bound on the
+pump, `V ≤ f·R`, closes the sandwich for every attacker size, pot depth and price at once. With the
+haircut the pump spends at most `0.8·f·R`, so the best a sandwich can do is
+`2·X·(0.8·f·R)/R − 2·f·X = −0.4·f·X`: a guaranteed loss of 40% of the fees paid, before the
+attacker's own price impact. Nothing here is a hardcoded size — a deeper pool or a fatter fee tier
+earns a proportionally larger pump.
+
+**2. The rush → the spend bucket `f·R · L/T`.** The fee ceiling bounds *one* pump and says nothing
+about a thousand of them in a block. A holder of a large bag could manufacture cheap round trips at
+or below the reference, each summoning a pump, and compress the pot's whole future spend into a
+moment they alone are positioned for. The bucket paces the pot to what the pool **earns**:
+
+```
+level after a swap:   L ← min(T,  L + k · B/R · T)          (a swap paying fee f·B credits k·f·B of budget)
+level over time:      L ← min(T,  L + Δt)                    (one full ceiling per T as a slow floor)
+level after a pump:   L ← L − spend/(f·R) · T
+```
+
+so over any window `W` with traded secondary volume `Vol`, the pot spends at most
+`k·f·Vol + f·R · W/T`: a hot market is bought hard, a dead one barely. A single sell of `R/k`
+(a quarter of the depth) fills the bucket by itself. For the farmer: a round trip of `Vol` each
+way costs `2·f·Vol` in fees and unlocks at most `h · 2·k·f·Vol` of pump; a constant-product buy of
+`S` lifts spot by `≈ 2·S/R`, so a bag `b` gains `b · 2 · (h·2·k·f·Vol)/R`. That beats the fees iff
+
+```
+b > R / (2·k·h) = R / 6.4  ≈ 16% of the pool's depth
+```
+
+— a bag that large, held the whole time at the market's mercy, lifted by exactly the same amount as
+every other holder, and only realisable by dumping into the pool that was just pumped. A bag-less
+manufacturer recovers `h·2·k·f·Vol` of buy pressure they do not own against `2·f·Vol` of fees they
+do: under a tenth back.
+
+**3. Gradualism → the demand ceiling `s·B`.** The pump never spends more than a share of the
+secondary the carrying swap itself moved. A dust trade summons a dust pump; the pot is spent in
+step with real flow, never all at once.
+
+**4. Farming a pushed price → the reference gate `s(d) = min(60%, f/d)`.** The demand ceiling lets
+a trader *summon* a pump by trading, so a trader who first pushes spot a premium `d` above the
+reference and then trades is summoning a pump at an inflated price they can sell into. Pushing spot
+by `d` on a constant-product pool takes a leg of `P ≈ d·R/2`, costing `f·P` in and `f·P` out; both
+legs — the push and the dump — present demand at the premium, so each summons a pump of `s·P`, and a
+pump hands the attacker at most `d` per unit (they sell at the premium the pump is buying at). The
+round trip nets
+
+```
+gain − cost  =  2·s·P·d − 2·f·P  >  0   iff   s > f/d
+```
+
+so the gate sets `s(d) = f/d` exactly at break-even, and the haircut makes it `0.8·f/d`: the round
+trip returns `1.6·f·P` against `2·f·P` of fees, a loss of 20% of the fees before the attacker's own
+impact on the unwind. At or below the reference there is no premium to sell into, so `s = 60%` and
+dips, ordinary trading and choppy markets are bought at full size. A genuine rally is bought at a
+size that shrinks as `f/d` while the reference catches up — for a 0.3% pool and a +3% premium the
+gate is `0.1`, at +30% it is `0.01`.
+
+**5. Moving the reference → the time-weighted tick with an asymmetric cap.** The gate is only as
+good as the reference, so the reference is built to be cheap to lower and expensive to raise:
+
+```
+observation dt seconds after the last:   ref ← ref + (lastTick − ref) · min(1, dt/τ)
+rise (a dearer main) clamped to:         |Δref| ≤ ρ · dt/60  =  296 ticks per minute  (≈ 3%/min)
+fall:                                    never clamped
+```
+
+`lastTick` is the tick the **previous** swap left, weighted by the time it stood — so a swap in the
+same block as the last one contributes nothing, and the pot's own pumps never enter it. Nothing a
+transaction does to spot inside its own block can move the reference; the only way in is a price
+held across a block boundary against the whole market, exposed to arbitrage the entire time. To
+make the pot believe a `+d` push the attacker must hold it for at least `d / 3%` minutes: `+3%`
+takes a minute, `+30%` about nine, `+100%` well over twenty — and every one of those blocks is a
+block in which anyone may sell into the held price. A dip, by contrast, reopens the full 60% share
+at once.
+
+**Putting the four together.** Take a pool of tangent depth `R = 100 ETH` and a 1% fee, with a
+full bucket and spot at the reference. A 5 ETH buy arrives: its credit (`4·5/100 = 0.2` of a
+ceiling) is clamped — the bucket was already full — so fee ceiling `1 ETH`, bucket `1 ETH`, demand
+ceiling `0.6 × 5 = 3 ETH` → the pump spends `0.8 × 1 = 0.8 ETH` and the bucket is left at `0.2`.
+A second 5 ETH buy a few seconds later: credit `0.2` lifts the bucket to `0.4` of a ceiling, which
+is now the binding term → `0.8 × 0.4 = 0.32 ETH`. A 0.1 ETH buy: demand ceiling `0.06 ETH` binds
+→ `0.048 ETH`.
+Then someone pushes spot +5% and sells 5 ETH into it: `s = 0.01/0.05 = 0.2`, demand ceiling
+`1 ETH`, but the bucket holds whatever refilled → the pump is small, priced below their break-even,
+and the reference has not moved because the push never stood across a block. Every number above is
+read from the pool's own state in the same transaction; there is no oracle to feed and no
+parameter for anyone to tune.
+
 ### Delivery — can never revert a swap
 
 A pot's `recipient` is stored verbatim; `address(0)` means **BURN**. Two rules frame everything below:

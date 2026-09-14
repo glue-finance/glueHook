@@ -31,8 +31,10 @@ GlueLiquidity  0xFAc051590a9F2c2AC4838c88F5754591Df194bc5   (linked library)
 > testnets), same address everywhere, bound at compile time to the Glue Protocol's campaign-4
 > `GlueStick` `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`. It was deployed from the Glue
 > repository's release orchestrator, which lands the Stick first, then this hook, then the Glue
-> engine pair that binds to it. The retired generation — V2 at `0x0F41…20c8` (bits `0x20C8`,
-> bound to the campaign-1 Stick) — is not the hook the Glue engines point at.
+> engine pair that binds to it. The earlier generations — V2 at `0x0F41…20c8` (bits `0x20C8`,
+> bound to the campaign-1 Stick) and V1 at `0xb216…60C8` — are not the hook the Glue engines
+> point at, but they are still deployed and still work: their exact source, addresses and what
+> changed between generations live in [`legacy/`](legacy).
 
 | Mainnets (13) | Testnets (5) |
 |---|---|

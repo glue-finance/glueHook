@@ -23,18 +23,16 @@ on each chain's explorer. Launch pools, add liquidity and manage programs from
 [simulator](https://gluehook.trade/app?tab=simulate) · [docs](https://gluehook.trade/docs)).
 
 ```
-GlueHook       0xbB021554C5294328b04fa313669715bD201BA040   (V4 generation, permission bits 0x2040)
+GlueHook       0xbB021554C5294328b04fa313669715bD201BA040   (V3 generation, permission bits 0x2040)
 GlueLiquidity  0xFAc051590a9F2c2AC4838c88F5754591Df194bc5   (linked library)
 ```
 
-> The address above is the **V4** deployment — landed 2026-09-13 on 18 chains (13 mainnets + 5
+> The address above is the **V3** deployment — landed 2026-09-13 on 18 chains (13 mainnets + 5
 > testnets), same address everywhere, bound at compile time to the Glue Protocol's campaign-4
-> `GlueStick` `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`. V4 is the V3 source (wrapper-aware
-> burns, the merged harvest + compound, the unified, reference-gated pump described below) with only
-> that constant changed; it was deployed from the Glue repository's release orchestrator, which lands
-> the Stick first, then this hook, then the Glue engine pair that binds to it. The retired
-> generations — V2 at `0x0F41…20c8` (bits `0x20C8`, bound to the campaign-1 Stick) and the
-> unshipped V3 build at `0x1576…a040` — are not the hook the Glue engines point at.
+> `GlueStick` `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`. It was deployed from the Glue
+> repository's release orchestrator, which lands the Stick first, then this hook, then the Glue
+> engine pair that binds to it. The retired generation — V2 at `0x0F41…20c8` (bits `0x20C8`,
+> bound to the campaign-1 Stick) — is not the hook the Glue engines point at.
 
 | Mainnets (13) | Testnets (5) |
 |---|---|
@@ -398,6 +396,7 @@ scripts/
   deploy-nonce0.mjs           per-chain two-transaction deployment (link + deploy) with strict pre-flight checks
   mine-salt.mjs               CREATE2 hook-address salt miner (single-chain alternative)
   run-external.sh             runs the auditor-skill suites (test/external, `external` profile)
+erc7730/                      ERC-7730 clear-signing descriptors for every user-facing call
 test/
   *.t.sol                     the main campaign (191 tests, 197 with FORK_RPC_URL; `forge test`)
   external/                   4 firm-skill suites, 49 tests — skipped by `forge test`, run via scripts/run-external.sh
@@ -460,6 +459,14 @@ pot's own buying — is paced by the spend bucket to `4×` the fees the pool ear
 only for a bag above ~16% of the pool's depth and even then captures at most `2·bag/depth` of what the
 pot spends, held the whole time, at the market's mercy and shared with every other holder (`M6a–c`,
 `M7g`, `A13`, `FM13`, with the bound stated and measured).
+
+## Clear signing (ERC-7730)
+
+Human-readable signing screens for every user-facing GlueHook call live in
+[`erc7730/`](erc7730/) and ship to the [ERC-7730 clear-signing registry](https://github.com/ethereum/clear-signing-erc7730-registry)
+under the `glue` entity (`calldata-GlueHook.json`). Wallets that consume the registry render
+"Launch TOKEN/ETH pool" instead of a selector + hex blob. PoolManager callbacks and the hook's
+self-calls are intentionally undescribed — those screens stay generic.
 
 ## Licence
 

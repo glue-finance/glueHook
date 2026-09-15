@@ -29,7 +29,7 @@ abstract contract GlueHookFixture is Test {
     address constant LIQ_LIB = 0xb0B0000000000000000000000000000000000B0B;
     /// @dev The REAL canonical GlueStick address (the hook's compile-time constant): the fixture
     ///      etches {MockGlueStick} here, so the Glue burn path runs exactly as in production.
-    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address constant GLUE_STICK = 0xBe99cB426fDf30F95784337d4e8CC460AC8e8608;
     /// @dev The chain's canonical wrapped native, as the hook's constructor arg. Only its ADDRESS
     ///      matters to the hook (an equality ban on pot mains), so a bare constant is enough.
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;

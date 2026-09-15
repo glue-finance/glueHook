@@ -47,7 +47,7 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address constant HOOK_ADDR = 0x9111000000000000000000000000000000002040;
     /// @dev The REAL canonical GlueStick address (the hook's compile-time constant).
-    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address constant GLUE_STICK = 0xBe99cB426fDf30F95784337d4e8CC460AC8e8608;
     /// @dev The chain's canonical wrapped native, as the hook's constructor arg.
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
@@ -261,7 +261,7 @@ contract GlueHookProgramInvariant is StdInvariant, Test {
 contract GlueHookNativeProgramInvariant is StdInvariant, Test {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address constant HOOK_ADDR = 0x9111000000000000000000000000000000002040;
-    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address constant GLUE_STICK = 0xBe99cB426fDf30F95784337d4e8CC460AC8e8608;
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;
     address constant ETH = address(0);
     uint24 constant FEE = 3000;

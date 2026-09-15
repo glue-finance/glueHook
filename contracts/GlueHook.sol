@@ -220,7 +220,7 @@ contract GlueHook is GluedV4Callback, IGlueHook {
     ///         own wrapper, or a PARK on a wrapper main: the hook never destroys supply itself, the
     ///         Glue Protocol does. A program whose creator the registry reports as a REGISTERED LP
     ///         engine ({IGlueStickMin.isRegisteredEngine}) is stamped NATIVE (see {IGlueHook}).
-    address public constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address public constant GLUE_STICK = 0xBe99cB426fDf30F95784337d4e8CC460AC8e8608;
 
     /// @notice This chain's canonical wrapped-native token — the WETH9-style wrapper Uniswap's own
     ///         periphery uses (WETH, WBNB, WPOL, WAVAX…). `address(0)` on a chain with no spendable

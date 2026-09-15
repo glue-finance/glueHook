@@ -35,7 +35,7 @@ contract GlueHookFork is Test {
     /// @dev The REAL canonical GlueStick address (the hook's compile-time constant). The fixture
     ///      etches the MockGlueStick stand-in over it even on a fork, keeping the suite hermetic
     ///      on chains the Glue Protocol has not reached.
-    address constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address constant GLUE_STICK = 0xBe99cB426fDf30F95784337d4e8CC460AC8e8608;
     /// @dev The chain's canonical wrapped native, as the hook's constructor arg (only its address
     ///      identity matters to the hook, so a constant serves every fork).
     address constant NATIVEWRAP = 0x4200000000000000000000000000000000000006;

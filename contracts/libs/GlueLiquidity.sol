@@ -83,7 +83,7 @@ library GlueLiquidity {
     ///      (`wrapperOf`) and ensures the main's glue exists through it (best effort); the burn
     ///      itself then talks to the main's GlueWrapper directly. Program creation asks it whether
     ///      the creator is a REGISTERED LP engine (`isRegisteredEngine`) to stamp NATIVE programs.
-    address private constant GLUE_STICK = 0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b;
+    address private constant GLUE_STICK = 0xBe99cB426fDf30F95784337d4e8CC460AC8e8608;
 
     /// @dev The hook's transient PAYER slot: `keccak256("GlueHook.payer")`. While set — only ever
     ///      around a liquidity add's unlock — the hook's `_transferToken` settles ERC20 legs straight

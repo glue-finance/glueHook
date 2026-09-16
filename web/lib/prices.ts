@@ -9,6 +9,7 @@ export function nativeCurrencyOf(net: Net): { sym: string; icon: string } {
   if (id === 56 || id === 97) return { sym: "BNB", icon: "/tokens/bnb.png" };
   if (id === 137 || id === 80002) return { sym: "POL", icon: "/tokens/pol.png" };
   if (id === 43114) return { sym: "AVAX", icon: "/tokens/eth.png" };
+  if (id === 196) return { sym: "OKB", icon: "/tokens/eth.png" }; // X Layer
   if (id === 5042) return { sym: "USDC", icon: "/tokens/usdc.png" }; // Arc: the gas coin is USDC
   return { sym: "ETH", icon: "/tokens/eth.png" };
 }
@@ -20,6 +21,7 @@ const IDS: Record<string, string> = {
   POL: "polygon-ecosystem-token",
   AVAX: "avalanche-2",
   USDC: "usd-coin",
+  OKB: "okb",
 };
 
 const TTL = 10 * 60 * 1000; // 10 minutes

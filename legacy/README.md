@@ -60,6 +60,9 @@ created on V3.
 
 ## What changed between them
 
+The V3 launch write-up, with the exact numbers on how much harder V3 is to play than V1/V2
+(20–67× depending on the fee tier): [x.com/glue_fi/status/2100237021264450020](https://x.com/glue_fi/status/2100237021264450020).
+
 | | V1 | V2 | V3 |
 |---|---|---|---|
 | Pot on buys | pump | pump | pump behind **every** swap, paced by volume and gated on a reference tick |

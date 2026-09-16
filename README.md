@@ -51,6 +51,40 @@ on Arc is the gas coin's own 6-decimal ERC-20 face, `0x3600000000000000000000000
 the honest value — nothing else in the hook reads it. Arc's PoolManager is
 `0x8366a39CC670B4001A1121B8F6A443A643e40951` (Uniswap's official deployment).
 
+### What's new in V3
+
+V1 and V2 are fully permissionless and work forever — V3 exists because the pot could buy
+**better**. The launch write-up with the full numbers:
+[*We froze the contracts. GlueHook V3 is live (67× better than V2)*](https://x.com/glue_fi/status/2100237021264450020).
+
+- **The pot can no longer empty itself in one transaction.** V1/V2 ran two modes — buying on buys
+  and defending on sells — and the defence could spend 100% of the pot at whatever price was on
+  the screen. V3 turns the defence into a buy and puts a TWAP underneath it: the most it spends
+  behind any one swap is `0.8·f·R` (0.8% of pool depth at a 1% pool), measured against its own
+  ten-minute time-weighted reference. It buys in slices, paced against the market — hard into
+  dips, pulling back as a rally runs ahead of the reference. Same money, more supply bought.
+- **One mechanism, behind every swap, in both directions.** It buys when you buy and it buys when
+  they sell: behind a buyer it adds to the buy, behind a seller it buys the dip that seller just
+  made. Traffic is the trigger; the pump runs inside the swapper's own transaction, so there is
+  nothing in the mempool to front-run.
+- **Best price and MEV are the same problem.** Every rule that stops the pot buying into a pushed
+  price is also the rule that stops someone manufacturing that price to farm it. The sandwich was
+  already closed in V2 (−40% of fees); V3 closes the other two doors by one to two orders of
+  magnitude — unlocking the pot costs 50% of it in fees instead of 2.5%, round-trip farming needs
+  a bag of 16% of depth instead of ~1.25%, a pushed premium shrinks the pump as `f/d`, and the
+  reference rises at most 3% a minute. Between **20× and 67×** depending on the fee tier; the
+  derivations are in [*The pump math*](#the-pump-math--every-play-priced-at-a-loss).
+- **The before-swap path is gone.** V3 runs on `0x2040` — `beforeInitialize` + `afterSwap` only —
+  and never touches a swapper's amounts. Your trade is the pool's plain execution and the buyback
+  happens after it: **quotes are exact** (every router prices a GlueHook pool with vanilla V4
+  math; integrating is reading one address), **swaps cannot be blocked** (every hook action is a
+  try/catch self-call — a failing buyback is skipped, never the swap), and **the surface shrank**
+  (less hook code in the hot path of other people's money).
+- **Better Glue integration.** Still general-purpose — any app, any pair — but the burn now goes
+  through Glue directly (cheaper, wrapper-aware), and native programs stream live harvest data to
+  the Glue engines used for staking and locking, so anything built on the Glue ecosystem gets
+  auto-harvesting compatibility and a cheaper integration.
+
 ## Why this hook exists
 
 Buyback programs today are either **manual** (a multisig watches the price and clicks) or **oracle-fed**

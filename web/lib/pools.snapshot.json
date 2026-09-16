@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-09-16T10:48:54.066Z",
+  "generatedAt": "2026-09-16T13:59:56.924Z",
   "chains": {
     "1": {
-      "lastBlock": "25975802",
+      "lastBlock": "25990492",
       "pools": {
         "0x0ef57bfdab9d5aa9e0ea5504d9f615e8c0b7ac516efa5836e41501737754e00c": {
           "key": {
@@ -15,6 +15,18 @@
           "admin": "0x3463171b81F5C17984A9d17f8edFb682D48d9d18",
           "block": 25705919,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0x1caa9755cda02dbc9f7228f7ada41b123aab26991596a990cef9a2dbc5a66351": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x6982508145454Ce325dDbE47a25d4ec3d2311933",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 25989887,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0xaa1e0b5f3579c3931b4426473a09049b10d3ad702524e47dc881d3c70f0f953a": {
           "key": {
@@ -55,8 +67,20 @@
       }
     },
     "10": {
-      "lastBlock": "156896495",
+      "lastBlock": "156984210",
       "pools": {
+        "0x42151aaddb5a099bebeadae4a0d30703a7b341bb1097605770db96b25286c271": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x4200000000000000000000000000000000000042",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 156980746,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
+        },
         "0x6d90e541318d6085ffa77ee59591d3f3d7ab30ae0df49d02361502563a299646": {
           "key": {
             "currency0": "0x0000000000000000000000000000000000000000",
@@ -96,7 +120,7 @@
       }
     },
     "56": {
-      "lastBlock": "116446904",
+      "lastBlock": "118146904",
       "pools": {
         "0x17effe84fcc8fba2f85d8534cebb323b14355b45efab4e31afa8361e9cf30f52": {
           "key": {
@@ -109,6 +133,18 @@
           "admin": "0xc1CFB2A82Bd1299a7D3b52BbD382Bc2E4864C9BD",
           "block": 121830022,
           "hook": "0xbb021554c5294328b04fa313669715bd201ba040"
+        },
+        "0x2ff092ea729877a53fedaf3321879bedcb2f98a51be2486c6476495394a7c908": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82",
+            "fee": 3056,
+            "tickSpacing": 60,
+            "hooks": "0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8"
+          },
+          "admin": "0x577b1C58c65478246B70cB8cFF1B9E3276955E03",
+          "block": 117562834,
+          "hook": "0x0f41715dc432692b66a5adf8dcfef6ac407b20c8"
         },
         "0x5e8d6d3c6ab487f61c481191a2b8e98f42150a6a11455e84d385078b8d3362d4": {
           "key": {
@@ -134,6 +170,18 @@
           "block": 114633305,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
         },
+        "0x81dc97c82ff1a644635158fc4432a729df8a207df3071e8beb197b9f1adcda81": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 122222506,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
+        },
         "0x96fbcf625a2e03207db5c958530be214b80548bb04aecf3539e1cc6103fca210": {
           "key": {
             "currency0": "0x0000000000000000000000000000000000000000",
@@ -149,7 +197,7 @@
       }
     },
     "130": {
-      "lastBlock": "58641809",
+      "lastBlock": "58818838",
       "pools": {
         "0x59d10ec74203398796c2eec7d84af4e2cd675a7c811176247a46b6ac644c6c16": {
           "key": {
@@ -162,6 +210,18 @@
           "admin": "0x7CFC4696498101125A66d15b5c456761bb049511",
           "block": 55433664,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0x772484866a00aa82819c2fc9b0242cc7088d7cf1035a243fb72bec3dd5ead3ee": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x15D0e0c55a3E7eE67152aD7E89acf164253Ff68d",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 58811860,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0x89e4d51757519512484888f9241234ec33c2d0e53bee82933103efbc2f509d87": {
           "key": {
@@ -202,7 +262,7 @@
       }
     },
     "137": {
-      "lastBlock": "93791156",
+      "lastBlock": "93908109",
       "pools": {
         "0x149a4f68ca20e35169c3399f11a06e93bdbe99d776e6c34f09ba8dde1f8ef8e7": {
           "key": {
@@ -215,6 +275,18 @@
           "admin": "0x1Ec2eBf4F37E7363FDfe3551602425af0B3ceef9",
           "block": 92755467,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0x1795b4d9a1ca3ca876e6ed9e870492fffefacae2779ff5d36a6dcfe3f363f199": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0xA3f751662e282E83EC3cBc387d225Ca56dD63D3A",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 93903515,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0x2698b9911dd82ca6947a5f372d56e6dbca59776d8ec15a48f478373c152b71c1": {
           "key": {
@@ -267,8 +339,20 @@
       }
     },
     "196": {
-      "lastBlock": "70622868",
+      "lastBlock": "70798162",
       "pools": {
+        "0x5d5a71c5b1ee8506e75aa6913b89ad1c198d4a45f0b0a5f080eb292b99953cd8": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x74b7F16337b8972027F6196A17a631aC6dE26d22",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 70793339,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
+        },
         "0x6b54b676bce0450c2f26229c68b984a8331db8b80bcf56b214df8d509839a86d": {
           "key": {
             "currency0": "0x0000000000000000000000000000000000000000",
@@ -344,7 +428,7 @@
       }
     },
     "480": {
-      "lastBlock": "35027264",
+      "lastBlock": "35115779",
       "pools": {
         "0x0195a110588bb663e4c63064082f2a7770d62ecc9c5899e6d013757fdbfe7df9": {
           "key": {
@@ -369,6 +453,18 @@
           "admin": "0x775Ba51809AeCc861DCabA741CfB1D7569Fc9Dd4",
           "block": 33405056,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0x55ae82304ad9b542e063ec5baf94265ad296d0997a96e587a34523895464f296": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x2cFc85d8E48F8EAB294be644d9E25C3030863003",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 35113247,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0x90503ccd9ea68bd582197da8211cee2aaf46edbf71d8219cf3dfcb26e5a54a66": {
           "key": {
@@ -401,7 +497,7 @@
       "pools": {}
     },
     "1868": {
-      "lastBlock": "28127708",
+      "lastBlock": "28216223",
       "pools": {
         "0x03e86e1392c14cb09e9b70c9675ad66759488fd139b9d33cefe48120f7ca2470": {
           "key": {
@@ -414,6 +510,18 @@
           "admin": "0x577b1C58c65478246B70cB8cFF1B9E3276955E03",
           "block": 27164069,
           "hook": "0x0f41715dc432692b66a5adf8dcfef6ac407b20c8"
+        },
+        "0x902f1156c5344f46576ff7ca92793a7b91ac70d897c9e9f302c9955fbccddf98": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x2CAE934a1e84F693fbb78CA5ED3B0A6893259441",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 28212802,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0xaa5d4af79d979180e9b3e91c647f616035b09a8b529bfff024c06ffefbf7f00a": {
           "key": {
@@ -442,7 +550,7 @@
       }
     },
     "4326": {
-      "lastBlock": "26593157",
+      "lastBlock": "26770185",
       "pools": {
         "0x232b62d239d1cd8df8b86a8ec68935b760961b48a76dfea116357ebef9cf4278": {
           "key": {
@@ -479,11 +587,23 @@
           "admin": "0x775Ba51809AeCc861DCabA741CfB1D7569Fc9Dd4",
           "block": 23337064,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0xef9799ca9be09a2e3ae9d1451309a4d0379b310d31475c8602013e439f4a443f": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0xFAfDdbb3FC7688494971a79cc65DCa3EF82079E7",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 26763391,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         }
       }
     },
     "4663": {
-      "lastBlock": "62836348",
+      "lastBlock": "64563076",
       "pools": {
         "0x1f046a5110ec8d0879cec92c39b5b66bfccf62e4b1c7bae5354c8eda80335792": {
           "key": {
@@ -520,6 +640,18 @@
           "admin": "0x3463171b81F5C17984A9d17f8edFb682D48d9d18",
           "block": 30593533,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0x379942326fb165e0fad582afb3e485d67c994be347af4c3658af6f6ce81f0ae9": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x6245e67affA44a23077f0Ea7f981a8DC743a0c47",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 64495793,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0x4bb8ea365e19b4d7027d9f89115dded71fce247ed37cdd29ae0585ea18630596": {
           "key": {
@@ -704,11 +836,24 @@
       }
     },
     "5042": {
-      "lastBlock": "21145452",
-      "pools": {}
+      "lastBlock": "21168058",
+      "pools": {
+        "0xe21f9e830e4b8eaca61c990df679332ec811b2ca2937bce687e40147c31f9c3a": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0xcC1cB6cDc1C06f8B19EED8a6E4A6Efd2C43d50f6",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 21154745,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
+        }
+      }
     },
     "8453": {
-      "lastBlock": "51300410",
+      "lastBlock": "51388925",
       "pools": {
         "0x189d3205d60ed27bc92787421eff9be3dfe931144fcf90e5db78787a14394203": {
           "key": {
@@ -770,6 +915,18 @@
           "block": 49699335,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
         },
+        "0xa282783bd0613414d3d2a87817b5e666d46d5cb2d8cc86c0e9062d97159a8d9c": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x9f86dB9fc6f7c9408e8Fda3Ff8ce4e78ac7a6b07",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 51386378,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
+        },
         "0xb7143db9594cd7db7f04f5e59b93d74e30276306f7801eef7570611134115766": {
           "key": {
             "currency0": "0x0000000000000000000000000000000000000000",
@@ -785,7 +942,7 @@
       }
     },
     "42161": {
-      "lastBlock": "505080279",
+      "lastBlock": "505778702",
       "pools": {
         "0x17effe84fcc8fba2f85d8534cebb323b14355b45efab4e31afa8361e9cf30f52": {
           "key": {
@@ -822,11 +979,23 @@
           "admin": "0x775Ba51809AeCc861DCabA741CfB1D7569Fc9Dd4",
           "block": 492187395,
           "hook": "0xb216070c3509047ea597e2e626a29cea427a60c8"
+        },
+        "0x81dc97c82ff1a644635158fc4432a729df8a207df3071e8beb197b9f1adcda81": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x25d887Ce7a35172C62FeBFD67a1856F20FaEbB00",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 505750993,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         }
       }
     },
     "43114": {
-      "lastBlock": "95264069",
+      "lastBlock": "95430926",
       "pools": {
         "0x138b11bda9762467464333ee05e884ab14397cbdc0b5afecba15da0dc9eb2b9e": {
           "key": {
@@ -839,6 +1008,18 @@
           "admin": "0xc1CFB2A82Bd1299a7D3b52BbD382Bc2E4864C9BD",
           "block": 95259677,
           "hook": "0xbb021554c5294328b04fa313669715bd201ba040"
+        },
+        "0x865c72d46d8ab2b55b90427cf4989de19c4d464da29c61bcf834079da75888ce": {
+          "key": {
+            "currency0": "0x0000000000000000000000000000000000000000",
+            "currency1": "0x420FcA0121DC28039145009570975747295f2329",
+            "fee": 10000,
+            "tickSpacing": 200,
+            "hooks": "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040"
+          },
+          "admin": "0x29DA8a59E834D45E21e1B9F34e3B8895C1F06086",
+          "block": 95426290,
+          "hook": "0x03d482cb3ff339c2d29736818d0f72c66dd6a040"
         },
         "0x9cae505cb5ef4baee753b8bb19faf110088ddfd66654e948a7d97cb1ff72cbd4": {
           "key": {

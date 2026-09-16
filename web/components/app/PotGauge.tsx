@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { formatUnits } from "viem";
 import type { Net } from "@/lib/chains";
-import { isCanonicalHook } from "@/lib/chains";
+import { isV3Hook } from "@/lib/chains";
 import { burnedSeries, potSeries } from "@/lib/derive";
 import type { PoolEvent } from "@/lib/events";
 import { fnum, ftoken } from "@/lib/format";
@@ -33,7 +33,7 @@ export function PotGauge({
   const mainSym = mainMeta.data?.symbol ?? "MAIN";
 
   const mainIs0 = !!pot && !!pool.key && pot.main === pool.key.currency0;
-  const v3 = isCanonicalHook(pool.hook);
+  const v3 = isV3Hook(pool.hook);
   const curves = useQuoteCurves(net, pool.key, pot?.balance, state.data?.sqrtPriceX96, mainIs0);
   const share = usePumpShare(net, pool.poolId, pool.hook);
 

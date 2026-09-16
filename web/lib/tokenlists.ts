@@ -108,6 +108,7 @@ const NATIVE_LOGOS: Record<string, string> = {
   MATIC: `${TW}/polygon/info/logo.png`,
   AVAX: `${TW}/avalanchec/info/logo.png`,
   OKB: `${TW}/okexchain/info/logo.png`,
+  USDC: `${TW}/ethereum/assets/0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48/logo.png`, // Arc's gas coin
 };
 
 /** TrustWallet asset folder per chain slug (only chains their repo covers). */

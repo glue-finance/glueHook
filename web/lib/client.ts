@@ -49,7 +49,7 @@ function batchSizeFor(url: string): number {
  *   a rate-limited or dead endpoint fails over instead of blocking the app.
  * - JSON-RPC BATCHING sized per endpoint against its measured cap.
  * - MULTICALL AGGREGATION: readContract calls collapse into single
- *   Multicall3 calls (verified deployed on ALL 18 networks), so a screen
+ *   Multicall3 calls (verified deployed on every network in the registry), so a screen
  *   full of balances/metadata costs one RPC request, not thirty.
  * - Bounded retries with backoff so a transient 429 heals itself without
  *   hammering the endpoint that just asked us to slow down.

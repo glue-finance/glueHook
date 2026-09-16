@@ -5,7 +5,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "GlueHook — buy back & autocompound your V4 LP",
     short_name: "GlueHook",
     description:
-      "A free, open-source Uniswap V4 hook that automates buybacks, burns and self-compounding liquidity — on-chain, contract-to-contract, no oracles, no keepers. Same address on 18 networks.",
+      "A free, open-source Uniswap V4 hook that automates buybacks, burns and self-compounding liquidity — on-chain, contract-to-contract, no oracles, no keepers. Same address on 14 mainnets.",
     id: "/",
     start_url: "/",
     scope: "/",

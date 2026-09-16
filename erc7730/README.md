@@ -17,7 +17,7 @@ erc7730/
 
 | Descriptor | Binding | Functions |
 |---|---|---|
-| `calldata-GlueHook.json` | 13 mainnets, same address `0xbB02…A040` | launchPool, initPot, addLiquidity, addLiquidityAdvanced, addProgramLiquidity, removeProgramLiquidity, harvest, donate, claim, flushDirect, setProgramConfig, setProgramOperator, setRecipient, transferProgramOwnership |
+| `calldata-GlueHook.json` | 14 mainnets (incl. Arc 5042), same address `0x03D4…A040` | launchPool, initPot, addLiquidity, addLiquidityAdvanced, addProgramLiquidity, removeProgramLiquidity, harvest, donate, claim, flushDirect, setProgramConfig, setProgramOperator, setRecipient, transferProgramOwnership |
 
 PoolManager / self-call entrypoints (`beforeInitialize`, `afterSwap`, `unlockCallback`,
 `executeHarvest`, `executePump`) are intentionally NOT described: wallets fall back to

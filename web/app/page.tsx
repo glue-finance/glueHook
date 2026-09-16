@@ -399,7 +399,7 @@ export default function Landing() {
                     create hooked pools straight from your own contracts and ship
                     products where every token launches with buybacks and
                     self-growing liquidity built in — same address on
-                    all 18 chains, nothing to deploy, nothing to pay.
+                    all 14 mainnets, nothing to deploy, nothing to pay.
                   </p>
                   <div className="mt-8">
                     <Link href="/docs" className="btn btn-ghost">

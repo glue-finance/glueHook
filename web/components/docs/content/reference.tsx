@@ -164,7 +164,7 @@ export function Api() {
 
       <H2>Views</H2>
       <Code>
-        <span className="g">GLUE_STICK</span>{" "}={"  "}<span className="l">0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b</span>{"\n"}
+        <span className="g">GLUE_STICK</span>{" "}={"  "}<span className="l">0xBe99cB426fDf30F95784337d4e8CC460AC8e8608</span>{"\n"}
         <span className="g">potOf</span>(poolId) → Pot{"\n"}
         <span className="g">programOf</span>(poolId) → Program{"\n"}
         <span className="g">quotePump</span>(key, demand) → (spend, minOut){"\n"}

@@ -62,7 +62,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Which wallet/network do I need?",
-      a: "Any EVM wallet on any of the 18 supported networks. The hook sits at the same address everywhere, so the flow is identical on Ethereum, Base, Robinhood Chain or any of the others.",
+      a: "Any EVM wallet on any of the 14 supported mainnets. The hook sits at the same address everywhere, so the flow is identical on Ethereum, Base, Robinhood Chain or any of the others.",
     },
     {
       q: "Do I have to configure everything at launch?",
@@ -88,7 +88,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Are testnets supported?",
-      a: "Yes — Sepolia, Base Sepolia, Unichain Sepolia, Arbitrum Sepolia and Robinhood Testnet run the same contracts at the same address, so a testnet integration ports to mainnet unchanged.",
+      a: "Yes — Sepolia, Base Sepolia, Unichain Sepolia, Arbitrum Sepolia and Robinhood Testnet. The V3 mainnet address is pending there (not funded yet); until it lands the testnets run the previous V3 build at 0xbB021554C5294328b04fa313669715bD201BA040 — same source, same ABI, only the Glue Stick it points at differs — so a testnet integration ports to mainnet with one address swap.",
     },
     {
       q: "Is the source verified?",
@@ -616,7 +616,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "How do I find the hook on a new chain?",
-      a: "Same address everywhere: 0xbB021554C5294328b04fa313669715bD201BA040. Hardcode it once, gate by chainId if you must, and the integration ports across all 18 networks. V1 and V2 still serve live pools at their own addresses.",
+      a: "Same address everywhere: 0x03D482cB3Ff339C2d29736818D0F72c66dD6A040. Hardcode it once, gate by chainId if you must, and the integration ports across all 14 mainnets. V1 and V2 still serve live pools at their own addresses.",
     },
     {
       q: "What events should my indexer watch?",

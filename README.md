@@ -15,7 +15,7 @@ Built by [Glue](https://github.com/glue-finance) and released as an open preview
 The hook is fully standalone: it runs on any chain with a V4 `PoolManager`, over any pair, with no
 external protocol wiring at all.
 
-## Deployed everywhere — one address, 18 networks
+## Deployed everywhere — one address, 14 mainnets
 
 The hook lives at the **same canonical address on every network**, source-verified
 on each chain's explorer. Launch pools, add liquidity and manage programs from
@@ -23,22 +23,33 @@ on each chain's explorer. Launch pools, add liquidity and manage programs from
 [simulator](https://gluehook.trade/app?tab=simulate) · [docs](https://gluehook.trade/docs)).
 
 ```
-GlueHook       0xbB021554C5294328b04fa313669715bD201BA040   (V3 generation, permission bits 0x2040)
-GlueLiquidity  0xFAc051590a9F2c2AC4838c88F5754591Df194bc5   (linked library)
+GlueHook       0x03D482cB3Ff339C2d29736818D0F72c66dD6A040   (V3 generation, permission bits 0x2040)
+GlueLiquidity  0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb   (linked library)
+GlueStick      0xBe99cB426fDf30F95784337d4e8CC460AC8e8608   (compile-time constant — Glue campaign 5)
 ```
 
-> The address above is the **V3** deployment — landed 2026-09-13 on 18 chains (13 mainnets + 5
-> testnets), same address everywhere, bound at compile time to the Glue Protocol's campaign-4
-> `GlueStick` `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`. It was deployed from the Glue
-> repository's release orchestrator, which lands the Stick first, then this hook, then the Glue
-> engine pair that binds to it. The earlier generations — V2 at `0x0F41…20c8` (bits `0x20C8`,
-> bound to the campaign-1 Stick) and V1 at `0xb216…60C8` — are not the hook the Glue engines
-> point at, but they are still deployed and still work: their exact source, addresses and what
-> changed between generations live in [`legacy/`](legacy).
+> The address above is the **V3** deployment — landed 2026-09-16 on 14 mainnets, same address
+> everywhere, bound at compile time to the Glue Protocol's campaign-5 `GlueStick`
+> `0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`. It was deployed from the Glue repository's
+> release orchestrator, which lands the Stick first, then this hook, then the Glue engine pair
+> that binds to it (`GlueLP_GlueHook` `0x7d45a4DEa073ED9b55058EaCbc82ea9520784165` →
+> `GlueLockerLPV0` `0xDf2f0f4e64D5FFC18CE01F73dbbf50823Eb3BebE`). The five testnets are
+> **pending** — same addresses, not funded yet. The earlier generations — V2 at `0x0F41…20c8`
+> (bits `0x20C8`, bound to the campaign-1 Stick) and V1 at `0xb216…60C8` — and the superseded
+> campaign-4 build of V3 at `0xbB02…A040` are not the hook the Glue engines point at, but they
+> are still deployed and still work: their exact source, addresses and what changed between
+> generations live in [`legacy/`](legacy).
 
-| Mainnets (13) | Testnets (5) |
+| Mainnets (14) | Testnets (5, pending) |
 |---|---|
-| [Ethereum](https://etherscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Base](https://basescan.org/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Unichain](https://uniscan.xyz/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Arbitrum](https://arbiscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Optimism](https://optimistic.etherscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [BNB Chain](https://bscscan.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Polygon](https://polygonscan.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Avalanche](https://snowscan.xyz/address/0xbB021554C5294328b04fa313669715bD201BA040) · [X Layer](https://www.oklink.com/x-layer/address/0xbB021554C5294328b04fa313669715bD201BA040) · [World Chain](https://worldscan.org/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Soneium](https://soneium.blockscout.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [MegaETH](https://megaeth.blockscout.com/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Robinhood](https://robinscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) | [Sepolia](https://sepolia.etherscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Base Sepolia](https://sepolia.basescan.org/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Unichain Sepolia](https://sepolia.uniscan.xyz/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Arbitrum Sepolia](https://sepolia.arbiscan.io/address/0xbB021554C5294328b04fa313669715bD201BA040) · [Robinhood Testnet](https://explorer.testnet.chain.robinhood.com/address/0xbB021554C5294328b04fa313669715bD201BA040) |
+| [Ethereum](https://etherscan.io/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Base](https://basescan.org/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Unichain](https://uniscan.xyz/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Arbitrum](https://arbiscan.io/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Optimism](https://optimistic.etherscan.io/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [BNB Chain](https://bscscan.com/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Polygon](https://polygonscan.com/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Avalanche](https://snowscan.xyz/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [X Layer](https://www.oklink.com/x-layer/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [World Chain](https://worldscan.org/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Soneium](https://soneium.blockscout.com/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [MegaETH](https://megaeth.blockscout.com/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Robinhood](https://robinscan.io/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) · [Arc](https://explorer.arc.io/address/0x03D482cB3Ff339C2d29736818D0F72c66dD6A040) | Sepolia · Base Sepolia · Unichain Sepolia · Arbitrum Sepolia · Robinhood Testnet — same addresses once funded |
+
+**Arc** (chain id 5042, Circle's USDC-gas L1, public mainnet 2026-09-16) is the one chain with no
+WETH9: Uniswap's `weth9` slot there is an `UnsupportedProtocol` stub, so the hook's `NATIVEWRAP`
+on Arc is the gas coin's own 6-decimal ERC-20 face, `0x3600000000000000000000000000000000000000`.
+`NATIVEWRAP` is only the never-glue-the-gas-coin guard (a pot's main may never be it), so that is
+the honest value — nothing else in the hook reads it. Arc's PoolManager is
+`0x8366a39CC670B4001A1121B8F6A443A643e40951` (Uniswap's official deployment).
 
 ## Why this hook exists
 
@@ -445,8 +456,8 @@ the same addresses on every EVM chain, including chains where V4 ships later (de
 their PoolManager exists; the addresses still match).
 
 Two things are fixed before the first transaction. The **GlueStick** is a compile-time constant
-(`GLUE_STICK` in `GlueHook.sol` and `GlueLiquidity.sol`, currently the campaign-4 Stick
-`0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`): every Glue burn and the native-program
+(`GLUE_STICK` in `GlueHook.sol` and `GlueLiquidity.sol`, currently the campaign-5 Stick
+`0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`): every Glue burn and the native-program
 stamp are bound to it for the life of the deployment, so the Glue Protocol's Stick of the same
 generation must already be live on a chain before the hook is deployed there. Repointing the
 constant is a new generation: rebuild, mine a new deployer, new addresses everywhere. And the deployer
@@ -473,8 +484,8 @@ node scripts/mine-deployer.mjs
 #    PoolManager and the nativeWrap are live contracts (both are immutable args — a typo burns
 #    that chain's shot), and the nonce-1 address carries 0x2040.
 #    <nativeWrap> is the chain's canonical wrapped native — the WETH9-style wrapper Uniswap's own
-#    periphery uses (WETH, WBNB, WPOL, WAVAX…); the zero address ONLY on a chain with no spendable
-#    native coin. It becomes the hook's NATIVEWRAP: a pot's main may never be it (nor the network
+#    periphery uses (WETH, WBNB, WPOL, WAVAX…); on a chain with no WETH9 (Arc) the gas coin's own
+#    ERC-20 face; the zero address ONLY on a chain with no spendable native coin. It becomes the hook's NATIVEWRAP: a pot's main may never be it (nor the network
 #    token), because every burn is the Glue Protocol's own (a wrapper unglue or a wrapper park).
 node scripts/deploy-nonce0.mjs <rpcUrl> <poolManager> <nativeWrap>
 ```

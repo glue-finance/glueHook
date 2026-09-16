@@ -14,10 +14,10 @@
  * `type(uint256).max` disarms an auto-harvest min.
  */
 
-export const CHAINS = [1, 8453, 130, 42161, 10, 56, 137, 43114, 196, 480, 1868, 4326, 4663];
+export const CHAINS = [1, 8453, 130, 42161, 10, 56, 137, 43114, 196, 480, 1868, 4326, 4663, 5042];
 
 export const ADDR = {
-  glueHook: "0xbB021554C5294328b04fa313669715bD201BA040",
+  glueHook: "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040",
 };
 
 const everywhere = (address) => CHAINS.map((chainId) => ({ chainId, address }));

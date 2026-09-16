@@ -7,7 +7,7 @@ import type { Net } from "./chains";
 import { clientForNet } from "./client";
 import { fetchPoolEvents, resolveTimestamps, type PoolEvent } from "./events";
 import { abiFor, asPotView, asProgramView, isNative, type PoolKey, type Pot, type Program } from "./hook";
-import { isCanonicalHook } from "./chains";
+import { isV3Hook } from "./chains";
 import { importPool, scanPools, type RegisteredPool, type ScanStage } from "./registry";
 
 // ---------------------------------------------------------------------------
@@ -157,7 +157,7 @@ export function useQuoteCurves(
         }),
       );
 
-      if (isCanonicalHook(at)) {
+      if (isV3Hook(at)) {
         return { pump, shield: [] as { size: bigint; absorbed: bigint; paid: bigint }[] };
       }
 
@@ -191,7 +191,7 @@ export function usePumpShare(net: Net, poolId: Hex | null, hook?: Address) {
   const at = hook ?? net.hook;
   return useQuery({
     queryKey: ["pumpShare", net.chain.id, poolId, at],
-    enabled: !!poolId && isCanonicalHook(at),
+    enabled: !!poolId && isV3Hook(at),
     refetchInterval: 12_000,
     queryFn: async () => {
       const client = clientForNet(net);
@@ -210,7 +210,7 @@ export function useDeliveredCum(net: Net, poolId: Hex | null, asset: Address | u
   const at = hook ?? net.hook;
   return useQuery({
     queryKey: ["deliveredCum", net.chain.id, poolId, asset, at],
-    enabled: !!poolId && !!asset && isCanonicalHook(at),
+    enabled: !!poolId && !!asset && isV3Hook(at),
     refetchInterval: 12_000,
     queryFn: async () => {
       const client = clientForNet(net);

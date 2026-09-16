@@ -16,20 +16,21 @@ saved on Dune; edit here, then push back (see below).
 
 ## Hook filters
 
-Every query matches all three live generations at once, and prunes each chain from the block V1
+Every query matches every live hook address at once, and prunes each chain from the block V1
 landed there (the earliest hook on that chain):
 
 ```
 hooks / contract_address IN (
   0xb216070c3509047ea597e2e626a29cea427a60c8,   -- V1
   0x0f41715dc432692b66a5adf8dcfef6ac407b20c8,   -- V2
-  0xbb021554c5294328b04fa313669715bd201ba040    -- V3 (canonical)
+  0xbb021554c5294328b04fa313669715bd201ba040,   -- V3, superseded campaign-4 build
+  0x03d482cb3ff339c2d29736818d0f72c66dd6a040    -- V3 (canonical)
 )
 AND block_number >= <V1 hookBlock on that chain>
 AND block_date >= DATE '2026-06-01'
 ```
 
-Dune covers 15 of the 18 networks (no MegaETH, X Layer, Soneium yet). Volume is indexed from
+Dune covers 10 of the 14 mainnets (no MegaETH, X Layer, Soneium, Arc yet — Arc went public on 2026-09-16; add `arc.logs` / `uniswap_v4_arc` the day Dune indexes it). Volume is indexed from
 Uniswap v4 call traces, so it is exact for every generation (V1/V2 carried swap-delta flags; V3
 does not).
 

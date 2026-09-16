@@ -905,9 +905,14 @@ ledger (`test_N15`, PN1–PN2).
    life of the deployment, so the Glue Protocol's Stick of the SAME generation must be live at that
    address on a chain before the hook is deployed there — `deploy-all.mjs` fails a chain without it.
    Changing the constant changes the bytecode: rebuild, re-run the campaign, re-check `--sizes`.
-   Current value: the Glue campaign-4 Stick `0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b`
-   (generation V4, hook `0xbB021554C5294328b04fa313669715bD201BA040`; the V3 build bound to
-   `0xD16E…9b4d` is retired — that Stick was never handed over).
+   Current value: the Glue campaign-5 Stick `0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`
+   (public generation V3, hook `0x03D482cB3Ff339C2d29736818D0F72c66dD6A040`, library
+   `0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb`, deployer `0xe900…F60D`, landed 2026-09-16 on 14
+   mainnets incl. Arc; testnets pending). Superseded builds of the same source, differing only in
+   this constant: the campaign-4 build `0xbB02…A040` (Stick `0x32b9…8b3b`, 2026-09-13, still
+   deployed and served as legacy — Glue retired campaign 4 for a staking-template granularity
+   defect, glue-v2-foundry SECURITY-AUDIT §8.21–§8.25) and the never-public build `0x1576…a040`
+   (Stick `0xD16E…9b4d`, never handed over).
 1. **Mine the deployer.** Run `scripts/mine-deployer.mjs` to mine a fresh key whose **nonce-1**
    CREATE address has low 14 bits equal to `REQUIRED_HOOK_FLAGS` (`beforeInitialize | afterSwap`
    = `0x2040`). The constructor asserts this, so a wrong address fails at deploy time. (Single-chain alternative: `scripts/mine-salt.mjs` for a CREATE2 salt.) Both addresses are known the
@@ -920,8 +925,10 @@ ledger (`test_N15`, PN1–PN2).
    `GlueLiquidity` library lands at nonce 0, the hook — its init code linked against that real
    library address in place of the `foundry.toml` sentinel — at nonce 1, with the constructor
    arguments `(poolManager, nativeWrap)`. `<nativeWrap>` is the chain's canonical wrapped native —
-   the WETH9-style wrapper Uniswap's own periphery uses (WETH, WBNB, WPOL, WAVAX…); pass the zero
-   address ONLY on a chain with no spendable native coin. Any chain with a V4 PoolManager; both
+   the WETH9-style wrapper Uniswap's own periphery uses (WETH, WBNB, WPOL, WAVAX…); on a chain with
+   no WETH9 (Arc — its `weth9` slot is the `UnsupportedProtocol` stub) the gas coin's own ERC-20
+   face (`0x3600…0000`, native USDC), since `NATIVEWRAP` is only the never-glue-the-gas-coin guard;
+   pass the zero address ONLY on a chain with no spendable native coin. Any chain with a V4 PoolManager; both
    addresses identical everywhere. The deployer key has no purpose after its two nonces: its
    leftover gas is swept to the operator's wallet by the script and the key is retired.
 3. **Launch a pool in ONE transaction** with `launchPool(key, sqrtPriceX96, main, recipient,

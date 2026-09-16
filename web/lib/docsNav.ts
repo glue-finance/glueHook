@@ -38,7 +38,7 @@ export const DOC_TREE: DocGroup[] = [
         slug: "networks",
         title: "Networks & addresses",
         short: "Networks",
-        blurb: "One canonical address on all 18 networks — and why the address itself is the permission.",
+        blurb: "One canonical address on all 14 mainnets — and why the address itself is the permission.",
       },
     ],
   },

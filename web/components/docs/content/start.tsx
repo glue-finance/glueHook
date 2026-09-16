@@ -16,7 +16,7 @@ export function WhatIs() {
         <Hookmark /> is a free, open-source Uniswap V4 hook that gives any pool an{" "}
         <B>automatic buyback machine</B> and <B>self-compounding liquidity</B> — running fully
         on-chain, inside the trades themselves. No price oracles. No keeper bots. No admin keys.
-        One contract, at the same address on 18 networks.
+        One contract, at the same address on 14 mainnets.
       </Lead>
 
       <Stats
@@ -371,8 +371,8 @@ export function Networks() {
       </Lead>
 
       <Code title="canonical addresses — every network, no exceptions">
-        GlueHook{"       "}<span className="g">0xbB021554C5294328b04fa313669715bD201BA040</span>{"\n"}
-        GlueLiquidity{"  "}<span className="g">0xFAc051590a9F2c2AC4838c88F5754591Df194bc5</span>
+        GlueHook{"       "}<span className="g">0x03D482cB3Ff339C2d29736818D0F72c66dD6A040</span>{"\n"}
+        GlueLiquidity{"  "}<span className="g">0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb</span>
       </Code>
 
       <AddressesTable />
@@ -387,7 +387,7 @@ export function Networks() {
         ]}
       />
       <P>
-        V3 is bound at compile time to GlueStick <C>0x32b926e7D6ac6B92e50dF40dDfd3555691bc8b3b</C>.
+        V3 is bound at compile time to GlueStick <C>0xBe99cB426fDf30F95784337d4e8CC460AC8e8608</C>.
         Permission bits <C>0x2040</C> mean <C>beforeInitialize</C> + <C>afterSwap</C> only — no
         swap-delta flags, so aggregator quotes are exact.
       </P>
@@ -420,7 +420,7 @@ export function Networks() {
       <H2>Verifying you&apos;re talking to the real hook</H2>
       <Steps
         items={[
-          { title: "Check the address", body: <>It must be exactly <C>0xbB021554C5294328b04fa313669715bD201BA040</C> — on every network.</> },
+          { title: "Check the address", body: <>It must be exactly <C>0x03D482cB3Ff339C2d29736818D0F72c66dD6A040</C> — on every network.</> },
           { title: "Check the flag bits", body: <>The low 14 bits must equal <C>0x2040</C>.</> },
           { title: "Check the source", body: <>Every deployment is source-verified; diff it against the repository if you like.</> },
         ]}

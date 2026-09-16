@@ -30,7 +30,7 @@ AND block_number >= <V1 hookBlock on that chain>
 AND block_date >= DATE '2026-06-01'
 ```
 
-Dune covers 10 of the 14 mainnets (no MegaETH, X Layer, Soneium, Arc yet — Arc went public on 2026-09-16; add `arc.logs` / `uniswap_v4_arc` the day Dune indexes it). Volume is indexed from
+Dune covers 10 of the 14 mainnets with Uniswap v4 spells (no MegaETH, X Layer, Soneium yet). **Arc** has raw tables (`arc.logs`, `arc.transactions`, …) but no `uniswap_v4_arc` spells yet, so it is in the raw-log **pump-volume** query only (from the V3 hook block 21132279); add it to the volume/TVL queries the day `uniswap_v4_arc.base_trades` / `PoolManager_evt_*` appear. Volume is indexed from
 Uniswap v4 call traces, so it is exact for every generation (V1/V2 carried swap-delta flags; V3
 does not).
 

@@ -43,6 +43,9 @@ WITH pumps AS (
     UNION ALL
     SELECT 'tempo' AS chain, topic1, data FROM tempo.logs
     WHERE contract_address IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040) AND topic0 = 0xef85bac7805b280938cdf45de486b073bb9da505f8733a5c0ff5dc9d741563c5 AND block_date >= DATE '2026-06-01'
+    UNION ALL
+    SELECT 'arc' AS chain, topic1, data FROM arc.logs
+    WHERE contract_address IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040) AND topic0 = 0xef85bac7805b280938cdf45de486b073bb9da505f8733a5c0ff5dc9d741563c5 AND block_number >= 21132279 AND block_date >= DATE '2026-06-01'
 )
 SELECT
     chain,

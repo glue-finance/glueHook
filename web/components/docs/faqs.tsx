@@ -88,7 +88,7 @@ export const DOC_FAQS: Record<string, DocFaq[]> = {
     },
     {
       q: "Are testnets supported?",
-      a: "Yes — Sepolia, Base Sepolia, Unichain Sepolia, Arbitrum Sepolia and Robinhood Testnet. The V3 mainnet address is pending there (not funded yet); until it lands the testnets run the previous V3 build at 0xbB021554C5294328b04fa313669715bD201BA040 — same source, same ABI, only the Glue Stick it points at differs — so a testnet integration ports to mainnet with one address swap.",
+      a: "Yes — Sepolia, Base Sepolia, Unichain Sepolia, Arbitrum Sepolia and Robinhood Testnet run the same contracts at the same address, so a testnet integration ports to mainnet unchanged.",
     },
     {
       q: "Is the source verified?",

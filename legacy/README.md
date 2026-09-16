@@ -52,7 +52,7 @@ Unichain Sepolia, Arbitrum Sepolia, Robinhood Testnet.
 
 **V3, campaign-4 build** (`0xbB02…A040`) — the same 18 networks as V2.
 
-**V3** (live, `0x03D4…A040`) — 14 mainnets: the 13 above plus **Arc** (5042). Testnets pending.
+**V3** (live, `0x03D4…A040`) — 19 networks: the 13 mainnets above plus **Arc** (5042), and the same five testnets.
 
 The app at [gluehook.trade](https://gluehook.trade) discovers pools on all four hook addresses and
 talks to each pool through the ABI of the generation it was created on. New pools from the app are always

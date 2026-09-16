@@ -86,8 +86,7 @@ export const CANONICAL_LIB = "0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb" as con
 /**
  * The superseded V3 build (bound to the Glue campaign-4 Stick): byte-identical source except
  * `GLUE_STICK`, same ABI, still deployed and served — discovery, reads and writes all work —
- * but new pools never land on it. Permission bits 0x2040. Pending V3 on the testnets, it is
- * still the hook the testnet registry creates pools on.
+ * but new pools never land on it. Permission bits 0x2040.
  */
 export const V3_CAMPAIGN4_HOOK = "0xbB021554C5294328b04fa313669715bD201BA040" as const;
 
@@ -168,18 +167,6 @@ function gens(v3: number, v3c4: number, v2: number, v1: number): { deployBlock: 
     deployBlock: v3,
     legacy: [
       { tag: "v3", hook: V3_CAMPAIGN4_HOOK, deployBlock: v3c4 },
-      { tag: "v2", hook: V2_HOOK, deployBlock: v2 },
-      { tag: "v1", hook: V1_HOOK, deployBlock: v1 },
-    ],
-  };
-}
-
-/** Testnets: V3 (campaign 5) is pending there — the campaign-4 build is still the live hook. */
-function gensTestnet(v3c4: number, v2: number, v1: number): { hook: `0x${string}`; deployBlock: number; legacy: Generation[] } {
-  return {
-    hook: V3_CAMPAIGN4_HOOK,
-    deployBlock: v3c4,
-    legacy: [
       { tag: "v2", hook: V2_HOOK, deployBlock: v2 },
       { tag: "v1", hook: V1_HOOK, deployBlock: v1 },
     ],
@@ -356,8 +343,8 @@ export const NETS: Net[] = [
     chain: sepolia, slug: "sepolia", label: "Sepolia", testnet: true,
     // 1rpc.io/sepolia is exhausted (200 "usage limit reached") — dropped
     rpcs: rpcsFor(11155111, "https://ethereum-sepolia-rpc.publicnode.com"),
-    poolManager: "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
-    ...gensTestnet(11698789, 11546970, 11438219),
+    hook: CANONICAL_HOOK, poolManager: "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
+    ...gens(11717533, 11698789, 11546970, 11438219),
     explorer: "https://sepolia.etherscan.io",
     universalRouter: "0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b",
     logRange: 50_000,
@@ -366,8 +353,8 @@ export const NETS: Net[] = [
     chain: baseSepolia, slug: "base-sepolia", label: "Base Sepolia", testnet: true,
     // publicnode 50k first; sepolia.base.org caps at 2k
     rpcs: rpcsFor(84532, "https://base-sepolia-rpc.publicnode.com", "https://sepolia.base.org", "https://base-sepolia.drpc.org"),
-    poolManager: "0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408",
-    ...gensTestnet(46785161, 45841074, 45168277),
+    hook: CANONICAL_HOOK, poolManager: "0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408",
+    ...gens(46902132, 46785161, 45841074, 45168277),
     explorer: "https://sepolia.basescan.org",
     universalRouter: "0x492e6456d9528771018deb9e87ef7750ef184104",
     logRange: 50_000,
@@ -375,8 +362,8 @@ export const NETS: Net[] = [
   {
     chain: unichainSepolia, slug: "unichain-sepolia", label: "Unichain Sepolia", testnet: true,
     rpcs: rpcsFor(1301, "https://unichain-sepolia-rpc.publicnode.com", "https://unichain-sepolia.drpc.org", "https://sepolia.unichain.org"),
-    poolManager: "0x00B036B58a818B1BC34d502D3fE730Db729e62AC",
-    ...gensTestnet(62486439, 60598020, 59252497),
+    hook: CANONICAL_HOOK, poolManager: "0x00B036B58a818B1BC34d502D3fE730Db729e62AC",
+    ...gens(62720399, 62486439, 60598020, 59252497),
     explorer: "https://sepolia.uniscan.xyz",
     universalRouter: "0xf70536b3bcc1bd1a972dc186a2cf84cc6da6be5d",
     logRange: 50_000,
@@ -384,8 +371,8 @@ export const NETS: Net[] = [
   {
     chain: arbitrumSepolia, slug: "arbitrum-sepolia", label: "Arbitrum Sepolia", testnet: true,
     rpcs: rpcsFor(421614, "https://sepolia-rollup.arbitrum.io/rpc", "https://arbitrum-sepolia-rpc.publicnode.com", "https://arbitrum-sepolia.drpc.org"),
-    poolManager: "0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317",
-    ...gensTestnet(308601376, 301010834, 295676509),
+    hook: CANONICAL_HOOK, poolManager: "0xFB3e0C6F74eB1a21CC1Da29aeC80D2Dfe6C9a317",
+    ...gens(309538247, 308601376, 301010834, 295676509),
     explorer: "https://sepolia.arbiscan.io",
     universalRouter: "0xefd1d4bd4cf1e86da286bb4cb1b8bced9c10ba47",
     logRange: 50_000,
@@ -393,8 +380,8 @@ export const NETS: Net[] = [
   {
     chain: robinhoodTestnet, slug: "robinhood-testnet", label: "Robinhood Testnet", testnet: true,
     rpcs: rpcsFor(46630, "https://rpc.testnet.chain.robinhood.com"),
-    poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
-    ...gensTestnet(118984924, 105754223, 97982800),
+    hook: CANONICAL_HOOK, poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+    ...gens(120432771, 118984924, 105754223, 97982800),
     explorer: "https://explorer.testnet.chain.robinhood.com",
     logRange: 50_000,
   },

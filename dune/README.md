@@ -16,14 +16,13 @@ saved on Dune; edit here, then push back (see below).
 
 ## Hook filters
 
-Every query matches every live hook address at once, and prunes each chain from the block V1
+Every query matches the three live generations at once (the retired pre-release V3 build `0xbb02…a040` is deliberately excluded — deprecated, its data is not shown), and prunes each chain from the block V1
 landed there (the earliest hook on that chain):
 
 ```
 hooks / contract_address IN (
   0xb216070c3509047ea597e2e626a29cea427a60c8,   -- V1
   0x0f41715dc432692b66a5adf8dcfef6ac407b20c8,   -- V2
-  0xbb021554c5294328b04fa313669715bd201ba040,   -- V3, superseded campaign-4 build
   0x03d482cb3ff339c2d29736818d0f72c66dd6a040    -- V3 (canonical)
 )
 AND block_number >= <V1 hookBlock on that chain>

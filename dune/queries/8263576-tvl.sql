@@ -1,33 +1,33 @@
 WITH pools AS (
-    SELECT 'ethereum' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_ethereum.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'ethereum' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_ethereum.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'base' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_base.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'base' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_base.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'arbitrum' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_arbitrum.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'arbitrum' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_arbitrum.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'optimism' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_optimism.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'optimism' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_optimism.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'bnb' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_bnb.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'bnb' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_bnb.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'polygon' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_polygon.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'polygon' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_polygon.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'avalanche_c' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_avalanche_c.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'avalanche_c' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_avalanche_c.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'blast' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_blast.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'blast' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_blast.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'celo' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_celo.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'celo' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_celo.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'zora' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_zora.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'zora' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_zora.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'worldchain' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_worldchain.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'worldchain' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_worldchain.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'unichain' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_unichain.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'unichain' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_unichain.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'monad' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_monad.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'monad' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_monad.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'robinhood' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_robinhood.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'robinhood' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_robinhood.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
     UNION ALL
-    SELECT 'tempo' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_tempo.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0xbb021554c5294328b04fa313669715bd201ba040, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
+    SELECT 'tempo' AS blockchain, id, currency0 AS token0, currency1 AS token1 FROM uniswap_v4_tempo.PoolManager_evt_Initialize WHERE hooks IN (0xb216070c3509047ea597e2e626a29cea427a60c8, 0x0f41715dc432692b66a5adf8dcfef6ac407b20c8, 0x03d482cb3ff339c2d29736818d0f72c66dd6a040)
 ),
 snaps AS (
     SELECT 'ethereum' AS blockchain, id, block_date, block_time, evt_index, CAST(liquiditydelta AS DOUBLE) AS L, CAST(sqrtpricex96 AS DOUBLE) AS sqrtpricex96 FROM uniswap_v4_ethereum.base_liquidity_events

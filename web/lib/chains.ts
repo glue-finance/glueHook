@@ -84,11 +84,10 @@ export const CANONICAL_HOOK = "0x03D482cB3Ff339C2d29736818D0F72c66dD6A040" as co
 export const CANONICAL_LIB = "0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb" as const;
 
 /**
- * The superseded V3 build (bound to the Glue campaign-4 Stick): byte-identical source except
- * `GLUE_STICK`, same ABI, still deployed and served — discovery, reads and writes all work —
- * but new pools never land on it. Permission bits 0x2040.
+ * A retired pre-release V3 build: same ABI as V3, kept only so pools created on it during its
+ * two days stay discoverable and operable in the app. New pools never land on it.
  */
-export const V3_CAMPAIGN4_HOOK = "0xbB021554C5294328b04fa313669715bD201BA040" as const;
+export const V3_RETIRED_HOOK = "0xbB021554C5294328b04fa313669715bD201BA040" as const;
 
 /** Live V2 — still served, no new pools. Permission bits 0x20C8. */
 export const V2_HOOK = "0x0F41715dc432692b66A5aDF8dCfef6Ac407b20c8" as const;
@@ -161,12 +160,12 @@ function rpcsFor(chainId: number, ...urls: string[]): string[] {
   return urls;
 }
 
-/** V3 deploy block + the campaign-4 V3 build, V2 and V1 as legacy entries. */
+/** V3 deploy block + the retired pre-release V3 build, V2 and V1 as legacy entries. */
 function gens(v3: number, v3c4: number, v2: number, v1: number): { deployBlock: number; legacy: Generation[] } {
   return {
     deployBlock: v3,
     legacy: [
-      { tag: "v3", hook: V3_CAMPAIGN4_HOOK, deployBlock: v3c4 },
+      { tag: "v3", hook: V3_RETIRED_HOOK, deployBlock: v3c4 },
       { tag: "v2", hook: V2_HOOK, deployBlock: v2 },
       { tag: "v1", hook: V1_HOOK, deployBlock: v1 },
     ],
@@ -417,10 +416,10 @@ export function isCanonicalHook(hook: string): boolean {
   return hook.toLowerCase() === CANONICAL_HOOK.toLowerCase();
 }
 
-/** Speaks the V3 ABI: the live V3 hook or its superseded campaign-4 build. */
+/** Speaks the V3 ABI: the live V3 hook or the retired pre-release build. */
 export function isV3Hook(hook: string): boolean {
   const h = hook.toLowerCase();
-  return h === CANONICAL_HOOK.toLowerCase() || h === V3_CAMPAIGN4_HOOK.toLowerCase();
+  return h === CANONICAL_HOOK.toLowerCase() || h === V3_RETIRED_HOOK.toLowerCase();
 }
 
 export function tagOfHook(hook: string): GenerationTag {

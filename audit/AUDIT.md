@@ -905,14 +905,10 @@ ledger (`test_N15`, PN1–PN2).
    life of the deployment, so the Glue Protocol's Stick of the SAME generation must be live at that
    address on a chain before the hook is deployed there — `deploy-all.mjs` fails a chain without it.
    Changing the constant changes the bytecode: rebuild, re-run the campaign, re-check `--sizes`.
-   Current value: the Glue campaign-5 Stick `0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`
+   Current value: the Glue Protocol's GlueStick `0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`
    (public generation V3, hook `0x03D482cB3Ff339C2d29736818D0F72c66dD6A040`, library
    `0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb`, deployer `0xe900…F60D`, landed 2026-09-16 on 14
-   mainnets incl. Arc; testnets pending). Superseded builds of the same source, differing only in
-   this constant: the campaign-4 build `0xbB02…A040` (Stick `0x32b9…8b3b`, 2026-09-13, still
-   deployed and served as legacy — Glue retired campaign 4 for a staking-template granularity
-   defect, glue-v2-foundry SECURITY-AUDIT §8.21–§8.25) and the never-public build `0x1576…a040`
-   (Stick `0xD16E…9b4d`, never handed over).
+   mainnets incl. Arc, and the 5 testnets).
 1. **Mine the deployer.** Run `scripts/mine-deployer.mjs` to mine a fresh key whose **nonce-1**
    CREATE address has low 14 bits equal to `REQUIRED_HOOK_FLAGS` (`beforeInitialize | afterSwap`
    = `0x2040`). The constructor asserts this, so a wrong address fails at deploy time. (Single-chain alternative: `scripts/mine-salt.mjs` for a CREATE2 salt.) Both addresses are known the

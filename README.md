@@ -25,19 +25,18 @@ on each chain's explorer. Launch pools, add liquidity and manage programs from
 ```
 GlueHook       0x03D482cB3Ff339C2d29736818D0F72c66dD6A040   (V3 generation, permission bits 0x2040)
 GlueLiquidity  0x01f739de084e7Cd3554dd4fABA970D346d3DD8Bb   (linked library)
-GlueStick      0xBe99cB426fDf30F95784337d4e8CC460AC8e8608   (compile-time constant — Glue campaign 5)
+GlueStick      0xBe99cB426fDf30F95784337d4e8CC460AC8e8608   (compile-time constant — the Glue Protocol's Stick)
 ```
 
 > The address above is the **V3** deployment — landed 2026-09-16 on 14 mainnets and 5 testnets, same
-> address everywhere, bound at compile time to the Glue Protocol's campaign-5 `GlueStick`
+> address everywhere, bound at compile time to the Glue Protocol's `GlueStick`
 > `0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`. It was deployed from the Glue repository's
 > release orchestrator, which lands the Stick first, then this hook, then the Glue engine pair
 > that binds to it (`GlueLP_GlueHook` `0x7d45a4DEa073ED9b55058EaCbc82ea9520784165` →
-> `GlueLockerLPV0` `0xDf2f0f4e64D5FFC18CE01F73dbbf50823Eb3BebE`). The earlier generations — V2 at `0x0F41…20c8`
-> (bits `0x20C8`, bound to the campaign-1 Stick) and V1 at `0xb216…60C8` — and the superseded
-> campaign-4 build of V3 at `0xbB02…A040` are not the hook the Glue engines point at, but they
-> are still deployed and still work: their exact source, addresses and what changed between
-> generations live in [`legacy/`](legacy).
+> `GlueLockerLPV0` `0xDf2f0f4e64D5FFC18CE01F73dbbf50823Eb3BebE`). The earlier generations — V2 at
+> `0x0F41…20c8` (bits `0x20C8`) and V1 at `0xb216…60C8` — are not the hook the Glue engines point
+> at, but they are still deployed and still work: their exact source, addresses and what changed
+> between generations live in [`legacy/`](legacy).
 
 | Mainnets (14) | Testnets (5) |
 |---|---|
@@ -489,7 +488,7 @@ the same addresses on every EVM chain, including chains where V4 ships later (de
 their PoolManager exists; the addresses still match).
 
 Two things are fixed before the first transaction. The **GlueStick** is a compile-time constant
-(`GLUE_STICK` in `GlueHook.sol` and `GlueLiquidity.sol`, currently the campaign-5 Stick
+(`GLUE_STICK` in `GlueHook.sol` and `GlueLiquidity.sol`, currently
 `0xBe99cB426fDf30F95784337d4e8CC460AC8e8608`): every Glue burn and the native-program
 stamp are bound to it for the life of the deployment, so the Glue Protocol's Stick of the same
 generation must already be live on a chain before the hook is deployed there. Repointing the

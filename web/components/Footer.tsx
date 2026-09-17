@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 
+import { DISCORD_URL } from "@/components/DiscordIcon";
 import { DUNE_DASHBOARD_URL } from "@/components/DuneIcon";
 
 export function Footer() {
@@ -18,6 +19,7 @@ export function Footer() {
             <a href={DUNE_DASHBOARD_URL} target="_blank" rel="noreferrer" className="hover:text-magenta">Dune</a>
             <a href="https://github.com/glue-finance/GlueHook" target="_blank" rel="noreferrer" className="hover:text-magenta">GitHub</a>
             <a href="https://x.com/glue_fi" target="_blank" rel="noreferrer" className="hover:text-magenta">X</a>
+            <a href={DISCORD_URL} target="_blank" rel="noreferrer" className="hover:text-magenta">Discord</a>
             <a href="https://github.com/glue-finance/GlueHook/blob/main/LICENCE.txt" target="_blank" rel="noreferrer" className="hover:text-magenta">Licence</a>
           </div>
           <a

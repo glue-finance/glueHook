@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DISCORD_URL, DiscordIcon } from "@/components/DiscordIcon";
 import { DUNE_DASHBOARD_URL, DuneIcon } from "@/components/DuneIcon";
 import { Footer } from "@/components/Footer";
 import { Hookmark } from "@/components/Hookmark";
@@ -247,6 +248,15 @@ export default function Landing() {
                 className="btn btn-ghost"
               >
                 GitHub ↗
+              </a>
+              <a
+                href={DISCORD_URL}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-ghost inline-flex items-center gap-2"
+              >
+                <DiscordIcon className="h-[1.1em] w-[1.1em] shrink-0" />
+                Discord ↗
               </a>
             </div>
             <HookChip />

@@ -27,10 +27,21 @@ their generic "unknown function" screen for them, which is the right signal.
 
 - ProgramConfig shares are WAD (`1e18 = 100%`) → `unit` with `base: "%"`, `decimals: 16`.
 - Uniswap V4 `fee` is hundredths of a bip → `unit` with `base: "%"`, `decimals: 4`.
-- `address(0)` = native coin wherever an asset is expected; burn / locked / frozen
-  wherever a recipient / owner / operator is expected (spelled in the label).
-- Auto-harvest mins: `type(uint256).max` = disarmed (label says `max=off`).
-- The pool key's `hooks` field is hidden — it is always this contract.
+- `address(0)` = native coin wherever an asset is expected. On a fee recipient
+  it means no remainder, and the contract accepts it only when that side's
+  shares already sum to 100% (`Fee → main (0=none)`, `Fee → 2nd (0=none)`). On an owner it locks the
+  liquidity and forces public harvest (`Owner (0=lock+public)`), except
+  `addLiquidity`, where a zero owner reverts. On the operator it freezes edits.
+- `donate` debits the pot's stored secondary. That token is not in the
+  calldata, so the amount is raw base units. Attached value still shows the
+  native leg.
+- `(0, 0)` ticks are the full-range sentinel. Adding or removing program
+  liquidity harvests through the stored split first. Liquidity is pool units;
+  the attached native value is a cap (`Max native sent`), and the ERC-20 leg
+  is whatever the pool charges for those units.
+- Auto-harvest mins: `type(uint256).max` = disarmed (`off` when the token is
+  in the calldata, otherwise the label says `max=off`).
+- The pool key's `hooks` field is `visible: "never"` — it is always this contract.
 
 ## Regenerate
 
@@ -53,8 +64,11 @@ cp erc7730/registry/glue/testsv2/calldata-GlueHook.tests.json /tmp/cs-registry/r
 Expected result: **0 errors**. Remaining warnings are known and accepted by the
 registry maintainers on other entities too:
 
-- "Display intent too long" — only for `interpolatedIntent` strings (>30 chars
-  by construction). Every plain `intent` is ≤30 chars and every `label` ≤20.
+- "Display intent too long" — `interpolatedIntent` strings that embed both
+  token paths run past 30 characters. Every plain `intent` is ≤30 chars.
+- "Display label too long" — a few labels name a sentinel the calldata cannot
+  compute (`Donation (pot 2nd token, raw)`, `Owner (0=lock+public)`,
+  `Lower tick (0,0=full)`). Length is a warning; the wording is the review.
 
 ## Submit
 

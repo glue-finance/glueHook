@@ -5,13 +5,23 @@
  * turns this into an ERC-7730 descriptor; the function fragments and parameter
  * tree come from the ABI, so this file only says HOW to show each value. A
  * `null` field hides a parameter (only for opaque identity — never for amounts,
- * recipients or targets).
+ * recipients or targets). `visible: "never"` keeps the field in the file but
+ * off the screen; that is how `key.hooks` is handled, because it is always
+ * this contract.
  *
  * Scales: ProgramConfig shares are WAD (1e18 = 100%) → `%` with 16 decimals.
  * Uniswap V4 `fee` is hundredths of a bip → `%` with 4 decimals. `address(0)`
- * is the native coin wherever an asset is expected, burn / locked / frozen
- * wherever a recipient / owner / operator is expected (spelled in the label).
- * `type(uint256).max` disarms an auto-harvest min.
+ * is the native coin wherever an asset is expected. On a recipient it means
+ * "no remainder" and is valid only when that side's shares already sum to
+ * 100%. On an owner it locks the liquidity forever and forces public harvest,
+ * except on `addLiquidity`, where a zero owner reverts because the default
+ * recipients are the owner. `type(uint256).max` disarms an auto-harvest min.
+ *
+ * `donate` pulls the pot's stored secondary, which is not in the calldata, so
+ * the amount is shown raw. `(0, 0)` ticks are a full-range sentinel.
+ * `addProgramLiquidity` / `removeProgramLiquidity` harvest through the stored
+ * split before they move principal. Liquidity is in pool units; the ERC-20
+ * leg is whatever the pool charges, and the attached native value is a cap.
  */
 
 export const CHAINS = [1, 8453, 130, 42161, 10, 56, 137, 43114, 196, 480, 1868, 4326, 4663, 5042];
@@ -24,16 +34,26 @@ const everywhere = (address) => CHAINS.map((chainId) => ({ chainId, address }));
 
 export const METADATA = {
   owner: "Glue",
-  info: { url: "https://gluehook.trade", legalName: "Glue Protocol", deploymentDate: "2026-09-13T00:00:00Z" },
+  info: { url: "https://gluehook.trade", deploymentDate: "2026-09-13T00:00:00Z" },
   constants: {
     native: "0x0000000000000000000000000000000000000000",
   },
 };
 
 const NATIVE = "$.metadata.constants.native";
+const MAX_U256 = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
 const asset = (label) => ({ label, format: "addressName", params: { types: ["token", "collection"] } });
-const account = (label) => ({ label, format: "addressName", params: { types: ["eoa", "wallet", "contract"] } });
-const amount = (label, tokenPath) => ({ label, format: "tokenAmount", params: { tokenPath, nativeCurrencyAddress: [NATIVE] } });
+const account = (label) => ({
+  label,
+  format: "addressName",
+  params: { types: ["eoa", "wallet", "contract"], sources: ["local", "ens"] },
+});
+const amount = (label, tokenPath, extra) => ({
+  label,
+  format: "tokenAmount",
+  params: { tokenPath, nativeCurrencyAddress: [NATIVE], ...extra },
+});
 const pctWad = (label) => ({ label, format: "unit", params: { base: "%", decimals: 16 } });
 const feePips = (label) => ({ label, format: "unit", params: { base: "%", decimals: 4 } });
 const raw = (label) => ({ label, format: "raw" });
@@ -45,26 +65,35 @@ const KEY = {
   "key.currency1": asset("Token 1"),
   "key.fee": feePips("Pool fee"),
   "key.tickSpacing": raw("Tick spacing"),
-  "key.hooks": null, // always this contract
+  "key.hooks": { label: "Hook", format: "addressName", params: { types: ["contract"] }, visible: "never" },
+};
+
+const TICKS = {
+  tickLower: optional(raw("Lower tick (0,0=full)")),
+  tickUpper: optional(raw("Upper tick (0,0=full)")),
 };
 
 const CONFIG = {
   "config.buybackShareWad": pctWad("Buyback share"),
   "config.burnShareWad": pctWad("Burn share"),
   "config.compoundShareWad": pctWad("Compound share"),
-  "config.potCompoundShareWad": optional(pctWad("Pot compound")),
-  "config.potBurnShareWad": optional(pctWad("Pot burn")),
+  "config.potCompoundShareWad": pctWad("Pot compound"),
+  "config.potBurnShareWad": pctWad("Pot burn"),
   "config.publicHarvest": raw("Public harvest"),
-  "config.secondaryRecipient": account("Fee → secondary"),
-  "config.mainRecipient": account("Fee → main"),
-  "config.minMain": optional(amount("Min main (max=off)", "main")),
-  "config.minSecondary": optional(raw("Min 2nd (max=off)")),
+  "config.secondaryRecipient": account("Fee → 2nd (0=none)"),
+  "config.mainRecipient": account("Fee → main (0=none)"),
+  "config.minMain": amount("Min main", "main", { threshold: MAX_U256, message: "off" }),
+  "config.minSecondary": raw("Min 2nd (max=off)"),
 };
 
 const CONFIG_NO_MAIN = {
   ...CONFIG,
-  "config.minMain": optional(raw("Min main (max=off)")),
+  "config.minMain": raw("Min main (max=off)"),
 };
+
+const LIQUIDITY = raw("Liquidity units");
+const MAX_NATIVE = native("Max native sent");
+const LOCKED_OWNER = account("Owner (0=lock+public)");
 
 export const CONTRACTS = {
   GlueHook: {
@@ -78,12 +107,11 @@ export const CONTRACTS = {
           sqrtPriceX96: optional(raw("Price sqrtX96")),
           main: asset("Main asset"),
           recipient: account("Delivery (0=burn)"),
-          tickLower: optional(raw("Lower tick")),
-          tickUpper: optional(raw("Upper tick")),
-          liquidity: raw("L units"),
-          owner: account("Owner (0=locked)"),
+          ...TICKS,
+          liquidity: LIQUIDITY,
+          owner: LOCKED_OWNER,
           ...CONFIG,
-          "@.value": optional(native()),
+          "@.value": MAX_NATIVE,
         },
       },
       initPot: {
@@ -97,41 +125,43 @@ export const CONTRACTS = {
       },
       addLiquidity: {
         intent: "Create LP program",
+        interpolatedIntent: "Create LP for {key.currency0}/{key.currency1}",
         fields: {
           ...KEY,
-          tickLower: optional(raw("Lower tick")),
-          tickUpper: optional(raw("Upper tick")),
-          liquidity: raw("L units"),
-          owner: account("Owner (0=locked)"),
-          "@.value": optional(native()),
+          ...TICKS,
+          liquidity: LIQUIDITY,
+          // A zero owner reverts here: both default recipients are the owner.
+          owner: account("Owner"),
+          "@.value": MAX_NATIVE,
         },
       },
       addLiquidityAdvanced: {
         intent: "Create LP program",
-        interpolatedIntent: "Create LP program for {key.currency0}/{key.currency1}",
+        interpolatedIntent: "Create LP for {key.currency0}/{key.currency1}",
         fields: {
           ...KEY,
-          tickLower: optional(raw("Lower tick")),
-          tickUpper: optional(raw("Upper tick")),
-          liquidity: raw("L units"),
-          owner: account("Owner (0=locked)"),
+          ...TICKS,
+          liquidity: LIQUIDITY,
+          owner: LOCKED_OWNER,
           ...CONFIG_NO_MAIN,
-          "@.value": optional(native()),
+          "@.value": MAX_NATIVE,
         },
       },
       addProgramLiquidity: {
-        intent: "Add program LP",
+        intent: "Add program LP (harvests)",
+        interpolatedIntent: "Add LP to {key.currency0}/{key.currency1} (harvests)",
         fields: {
           ...KEY,
-          liquidity: raw("L units"),
-          "@.value": optional(native()),
+          liquidity: LIQUIDITY,
+          "@.value": MAX_NATIVE,
         },
       },
       removeProgramLiquidity: {
-        intent: "Remove program LP",
+        intent: "Remove program LP (harvests)",
+        interpolatedIntent: "Remove LP from {key.currency0}/{key.currency1} (harvests)",
         fields: {
           ...KEY,
-          liquidity: raw("L units"),
+          liquidity: LIQUIDITY,
           to: account("Send remainder to"),
         },
       },
@@ -142,11 +172,12 @@ export const CONTRACTS = {
       },
       donate: {
         intent: "Donate to pot",
+        // The secondary token is stored on the pot, not in the calldata.
         interpolatedIntent: "Donate to {key.currency0}/{key.currency1} pot",
         fields: {
           ...KEY,
-          amount: amount("Donation", "key.currency0"),
-          "@.value": optional(native()),
+          amount: raw("Donation (pot 2nd token, raw)"),
+          "@.value": native(),
         },
       },
       claim: {
@@ -156,10 +187,12 @@ export const CONTRACTS = {
       },
       flushDirect: {
         intent: "Retry delivery",
+        interpolatedIntent: "Retry parked delivery",
         fields: { poolId: raw("Pool id") },
       },
       setProgramConfig: {
         intent: "Edit LP program",
+        interpolatedIntent: "Edit LP program split",
         fields: {
           poolId: raw("Pool id"),
           ...CONFIG_NO_MAIN,
@@ -186,7 +219,7 @@ export const CONTRACTS = {
         interpolatedIntent: "Transfer program to {newOwner}",
         fields: {
           poolId: raw("Pool id"),
-          newOwner: account("Owner (0=locked)"),
+          newOwner: LOCKED_OWNER,
         },
       },
     },

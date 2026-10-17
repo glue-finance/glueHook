@@ -43,6 +43,8 @@ const dataProvider = {
   },
   addressNames: {
     [ADDR.glueHook.toLowerCase()]: "GlueHook",
+    [A.sticky.toLowerCase()]: "TOKEN",
+    [A.usdc.toLowerCase()]: "USDC",
   },
   nftCollectionNames: {},
 };
@@ -55,6 +57,9 @@ const ethQuoted = {
   hooks: ADDR.glueHook,
 };
 
+// 20% buyback + 50% compound leaves a secondary remainder, and 30% burn + 50%
+// compound leaves a main remainder. Both recipients have to be live;
+// address(0) is valid only when that side's shares already sum to 100%.
 const split = {
   buybackShareWad: pct(20),
   burnShareWad: pct(30),
@@ -63,9 +68,17 @@ const split = {
   potBurnShareWad: 0n,
   publicHarvest: false,
   secondaryRecipient: A.friend,
-  mainRecipient: ZERO,
+  mainRecipient: A.user,
   minMain: 2n ** 256n - 1n,
   minSecondary: 2n ** 256n - 1n,
+};
+
+const erc20Pair = {
+  currency0: A.sticky,
+  currency1: A.usdc,
+  fee: 3000,
+  tickSpacing: 60,
+  hooks: ADDR.glueHook,
 };
 
 const poolId = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -89,6 +102,35 @@ const SAMPLES = {
       },
     },
     {
+      fn: "initPot",
+      description: "Open a buyback pot, burn recipient, TOKEN as main",
+      args: { key: ethQuoted, main: A.sticky, recipient: ZERO },
+    },
+    {
+      fn: "addLiquidityAdvanced",
+      description: "Create a full-range LP program with a 3-way split",
+      value: E18,
+      args: {
+        key: ethQuoted,
+        tickLower: 0,
+        tickUpper: 0,
+        liquidity: 1_000_000n,
+        owner: A.user,
+        config: split,
+      },
+    },
+    {
+      fn: "addProgramLiquidity",
+      description: "Add liquidity units to an existing program",
+      value: E18 / 4n,
+      args: { key: ethQuoted, liquidity: 500_000n },
+    },
+    {
+      fn: "removeProgramLiquidity",
+      description: "Remove program LP and send remainder to a friend",
+      args: { key: ethQuoted, liquidity: 250_000n, to: A.friend },
+    },
+    {
       fn: "donate",
       description: "Donate 0.5 ETH to a native secondary pot",
       value: E18 / 2n,
@@ -97,10 +139,12 @@ const SAMPLES = {
     {
       fn: "donate",
       description: "Donate 1000 TOKEN to an ERC20 secondary pot",
-      args: {
-        key: { currency0: A.sticky, currency1: A.usdc, fee: 3000, tickSpacing: 60, hooks: ADDR.glueHook },
-        amount: 1000n * E18,
-      },
+      args: { key: erc20Pair, amount: 1000n * E18 },
+    },
+    {
+      fn: "donate",
+      description: "Donate 1000 USDC when the pot main is currency0",
+      args: { key: erc20Pair, amount: 1000n * 1_000_000n },
     },
     {
       fn: "addLiquidity",
@@ -119,6 +163,11 @@ const SAMPLES = {
       args: { poolId, config: split },
     },
     {
+      fn: "setProgramOperator",
+      description: "Freeze the program operator",
+      args: { poolId, newOperator: ZERO },
+    },
+    {
       fn: "setRecipient",
       description: "Point the pot at burn",
       args: { poolId, recipient: ZERO },
@@ -132,6 +181,11 @@ const SAMPLES = {
       fn: "claim",
       description: "Claim owed TOKEN",
       args: { asset: A.sticky },
+    },
+    {
+      fn: "flushDirect",
+      description: "Retry a parked main delivery",
+      args: { poolId },
     },
   ],
 };
@@ -170,10 +224,12 @@ function fmt(descriptor, value, field, scope, i) {
     case "tokenAmount": {
       const token = p.tokenPath === "@.to" ? scope["@.to"] : at(scope, p.tokenPath, i);
       const natives = (p.nativeCurrencyAddress ?? []).map((n) => constant(descriptor, n).toLowerCase());
+      const nativeToken = natives.includes(String(token).toLowerCase());
       const t = dataProvider.tokens[String(token).toLowerCase()];
-      if (natives.includes(String(token).toLowerCase())) return `${trim(value, 18)} ${NATIVE_SYMBOL}`;
-      if (!t) throw new Error(`no mock token for ${token}`);
-      return `${trim(value, t.decimals)} ${t.symbol}`;
+      if (!nativeToken && !t) throw new Error(`no mock token for ${token}`);
+      const symbol = nativeToken ? NATIVE_SYMBOL : t.symbol;
+      if (p.threshold != null && BigInt(value) >= BigInt(p.threshold)) return `${p.message ?? "All"} ${symbol}`;
+      return `${trim(value, nativeToken ? 18 : t.decimals)} ${symbol}`;
     }
     case "amount":
       return `${trim(value, 18)} ${NATIVE_SYMBOL}`;
@@ -191,8 +247,11 @@ function render(descriptor, fields, scope, out) {
       for (const el of arr) render(descriptor, f.fields, { ...el, "@.to": scope["@.to"] }, out);
       continue;
     }
-    if (f.visible && f.visible !== "always") continue;
-    if (f.path.startsWith("@.")) continue;
+    if (f.visible === "never") continue;
+    if (f.path.startsWith("@.")) {
+      out.push({ label: f.label, value: fmt(descriptor, scope[f.path], f, scope) });
+      continue;
+    }
     if (f.path.includes(".[]")) {
       const arr = resolve(scope, f.path);
       arr.forEach((v, i) => out.push({ label: f.label, value: fmt(descriptor, v, f, scope, i) }));
@@ -227,7 +286,7 @@ for (const [name, samples] of Object.entries(SAMPLES)) {
       type: 2, chainId: CHAIN, nonce: 7, maxFeePerGas: 50_000_000n, maxPriorityFeePerGas: 1_000_000n, gasLimit: 900_000n,
       to: s.to ?? to, value: s.value ?? 0n, data,
     });
-    const scope = { ...s.args, "@.to": s.to ?? to };
+    const scope = { ...s.args, "@.to": s.to ?? to, "@.value": s.value ?? 0n };
     const fields = [];
     render(descriptor, spec.fields, scope, fields);
     const expected = { intent: spec.intent, owner: descriptor.metadata.owner, fields };

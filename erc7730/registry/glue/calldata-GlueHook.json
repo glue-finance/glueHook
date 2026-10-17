@@ -67,7 +67,6 @@
     "owner": "Glue",
     "info": {
       "url": "https://gluehook.trade",
-      "legalName": "Glue Protocol",
       "deploymentDate": "2026-09-13T00:00:00Z"
     },
     "constants": {
@@ -119,6 +118,17 @@
             "format": "raw"
           },
           {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
+          },
+          {
             "path": "sqrtPriceX96",
             "label": "Price sqrtX96",
             "format": "raw",
@@ -144,35 +154,43 @@
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "tickLower",
-            "label": "Lower tick",
+            "label": "Lower tick (0,0=full)",
             "format": "raw",
             "visible": "optional"
           },
           {
             "path": "tickUpper",
-            "label": "Upper tick",
+            "label": "Upper tick (0,0=full)",
             "format": "raw",
             "visible": "optional"
           },
           {
             "path": "liquidity",
-            "label": "L units",
+            "label": "Liquidity units",
             "format": "raw"
           },
           {
             "path": "owner",
-            "label": "Owner (0=locked)",
+            "label": "Owner (0=lock+public)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
@@ -210,8 +228,7 @@
             "params": {
               "base": "%",
               "decimals": 16
-            },
-            "visible": "optional"
+            }
           },
           {
             "path": "config.potBurnShareWad",
@@ -220,8 +237,7 @@
             "params": {
               "base": "%",
               "decimals": 16
-            },
-            "visible": "optional"
+            }
           },
           {
             "path": "config.publicHarvest",
@@ -230,51 +246,58 @@
           },
           {
             "path": "config.secondaryRecipient",
-            "label": "Fee → secondary",
+            "label": "Fee → 2nd (0=none)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "config.mainRecipient",
-            "label": "Fee → main",
+            "label": "Fee → main (0=none)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "config.minMain",
-            "label": "Min main (max=off)",
+            "label": "Min main",
             "format": "tokenAmount",
             "params": {
               "tokenPath": "main",
               "nativeCurrencyAddress": [
                 "$.metadata.constants.native"
-              ]
-            },
-            "visible": "optional"
+              ],
+              "threshold": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "message": "off"
+            }
           },
           {
             "path": "config.minSecondary",
             "label": "Min 2nd (max=off)",
-            "format": "raw",
-            "visible": "optional"
+            "format": "raw"
           },
           {
             "path": "@.value",
-            "label": "Native sent",
-            "format": "amount",
-            "visible": "optional"
+            "label": "Max native sent",
+            "format": "amount"
           }
         ]
       },
@@ -320,6 +343,17 @@
             "format": "raw"
           },
           {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
+          },
+          {
             "path": "main",
             "label": "Main asset",
             "format": "addressName",
@@ -339,6 +373,10 @@
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           }
@@ -347,6 +385,7 @@
       "addLiquidity((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) key,int24 tickLower,int24 tickUpper,uint128 liquidity,address owner)": {
         "$id": "addLiquidity",
         "intent": "Create LP program",
+        "interpolatedIntent": "Create LP for {key.currency0}/{key.currency1}",
         "fields": [
           {
             "path": "key.currency0",
@@ -385,46 +424,60 @@
             "format": "raw"
           },
           {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
+          },
+          {
             "path": "tickLower",
-            "label": "Lower tick",
+            "label": "Lower tick (0,0=full)",
             "format": "raw",
             "visible": "optional"
           },
           {
             "path": "tickUpper",
-            "label": "Upper tick",
+            "label": "Upper tick (0,0=full)",
             "format": "raw",
             "visible": "optional"
           },
           {
             "path": "liquidity",
-            "label": "L units",
+            "label": "Liquidity units",
             "format": "raw"
           },
           {
             "path": "owner",
-            "label": "Owner (0=locked)",
+            "label": "Owner",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "@.value",
-            "label": "Native sent",
-            "format": "amount",
-            "visible": "optional"
+            "label": "Max native sent",
+            "format": "amount"
           }
         ]
       },
       "addLiquidityAdvanced((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) key,int24 tickLower,int24 tickUpper,uint128 liquidity,address owner,(uint64 buybackShareWad,uint64 burnShareWad,uint64 compoundShareWad,uint64 potCompoundShareWad,uint64 potBurnShareWad,bool publicHarvest,address secondaryRecipient,address mainRecipient,uint256 minMain,uint256 minSecondary) config)": {
         "$id": "addLiquidityAdvanced",
         "intent": "Create LP program",
-        "interpolatedIntent": "Create LP program for {key.currency0}/{key.currency1}",
+        "interpolatedIntent": "Create LP for {key.currency0}/{key.currency1}",
         "fields": [
           {
             "path": "key.currency0",
@@ -463,31 +516,46 @@
             "format": "raw"
           },
           {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
+          },
+          {
             "path": "tickLower",
-            "label": "Lower tick",
+            "label": "Lower tick (0,0=full)",
             "format": "raw",
             "visible": "optional"
           },
           {
             "path": "tickUpper",
-            "label": "Upper tick",
+            "label": "Upper tick (0,0=full)",
             "format": "raw",
             "visible": "optional"
           },
           {
             "path": "liquidity",
-            "label": "L units",
+            "label": "Liquidity units",
             "format": "raw"
           },
           {
             "path": "owner",
-            "label": "Owner (0=locked)",
+            "label": "Owner (0=lock+public)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
@@ -525,8 +593,7 @@
             "params": {
               "base": "%",
               "decimals": 16
-            },
-            "visible": "optional"
+            }
           },
           {
             "path": "config.potBurnShareWad",
@@ -535,8 +602,7 @@
             "params": {
               "base": "%",
               "decimals": 16
-            },
-            "visible": "optional"
+            }
           },
           {
             "path": "config.publicHarvest",
@@ -545,51 +611,57 @@
           },
           {
             "path": "config.secondaryRecipient",
-            "label": "Fee → secondary",
+            "label": "Fee → 2nd (0=none)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "config.mainRecipient",
-            "label": "Fee → main",
+            "label": "Fee → main (0=none)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "config.minMain",
             "label": "Min main (max=off)",
-            "format": "raw",
-            "visible": "optional"
+            "format": "raw"
           },
           {
             "path": "config.minSecondary",
             "label": "Min 2nd (max=off)",
-            "format": "raw",
-            "visible": "optional"
+            "format": "raw"
           },
           {
             "path": "@.value",
-            "label": "Native sent",
-            "format": "amount",
-            "visible": "optional"
+            "label": "Max native sent",
+            "format": "amount"
           }
         ]
       },
       "addProgramLiquidity((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) key,uint128 liquidity)": {
         "$id": "addProgramLiquidity",
-        "intent": "Add program LP",
+        "intent": "Add program LP (harvests)",
+        "interpolatedIntent": "Add LP to {key.currency0}/{key.currency1} (harvests)",
         "fields": [
           {
             "path": "key.currency0",
@@ -628,21 +700,32 @@
             "format": "raw"
           },
           {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
+          },
+          {
             "path": "liquidity",
-            "label": "L units",
+            "label": "Liquidity units",
             "format": "raw"
           },
           {
             "path": "@.value",
-            "label": "Native sent",
-            "format": "amount",
-            "visible": "optional"
+            "label": "Max native sent",
+            "format": "amount"
           }
         ]
       },
       "removeProgramLiquidity((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) key,uint128 liquidity,address to)": {
         "$id": "removeProgramLiquidity",
-        "intent": "Remove program LP",
+        "intent": "Remove program LP (harvests)",
+        "interpolatedIntent": "Remove LP from {key.currency0}/{key.currency1} (harvests)",
         "fields": [
           {
             "path": "key.currency0",
@@ -681,8 +764,19 @@
             "format": "raw"
           },
           {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
+          },
+          {
             "path": "liquidity",
-            "label": "L units",
+            "label": "Liquidity units",
             "format": "raw"
           },
           {
@@ -694,6 +788,10 @@
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           }
@@ -739,6 +837,17 @@
             "path": "key.tickSpacing",
             "label": "Tick spacing",
             "format": "raw"
+          },
+          {
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
+            "params": {
+              "types": [
+                "contract"
+              ]
+            },
+            "visible": "never"
           }
         ]
       },
@@ -784,21 +893,25 @@
             "format": "raw"
           },
           {
-            "path": "amount",
-            "label": "Donation",
-            "format": "tokenAmount",
+            "path": "key.hooks",
+            "label": "Hook",
+            "format": "addressName",
             "params": {
-              "tokenPath": "key.currency0",
-              "nativeCurrencyAddress": [
-                "$.metadata.constants.native"
+              "types": [
+                "contract"
               ]
-            }
+            },
+            "visible": "never"
+          },
+          {
+            "path": "amount",
+            "label": "Donation (pot 2nd token, raw)",
+            "format": "raw"
           },
           {
             "path": "@.value",
             "label": "Native sent",
-            "format": "amount",
-            "visible": "optional"
+            "format": "amount"
           }
         ]
       },
@@ -823,6 +936,7 @@
       "flushDirect(bytes32 poolId)": {
         "$id": "flushDirect",
         "intent": "Retry delivery",
+        "interpolatedIntent": "Retry parked delivery",
         "fields": [
           {
             "path": "poolId",
@@ -834,6 +948,7 @@
       "setProgramConfig(bytes32 poolId,(uint64 buybackShareWad,uint64 burnShareWad,uint64 compoundShareWad,uint64 potCompoundShareWad,uint64 potBurnShareWad,bool publicHarvest,address secondaryRecipient,address mainRecipient,uint256 minMain,uint256 minSecondary) config)": {
         "$id": "setProgramConfig",
         "intent": "Edit LP program",
+        "interpolatedIntent": "Edit LP program split",
         "fields": [
           {
             "path": "poolId",
@@ -874,8 +989,7 @@
             "params": {
               "base": "%",
               "decimals": 16
-            },
-            "visible": "optional"
+            }
           },
           {
             "path": "config.potBurnShareWad",
@@ -884,8 +998,7 @@
             "params": {
               "base": "%",
               "decimals": 16
-            },
-            "visible": "optional"
+            }
           },
           {
             "path": "config.publicHarvest",
@@ -894,39 +1007,45 @@
           },
           {
             "path": "config.secondaryRecipient",
-            "label": "Fee → secondary",
+            "label": "Fee → 2nd (0=none)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "config.mainRecipient",
-            "label": "Fee → main",
+            "label": "Fee → main (0=none)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           },
           {
             "path": "config.minMain",
             "label": "Min main (max=off)",
-            "format": "raw",
-            "visible": "optional"
+            "format": "raw"
           },
           {
             "path": "config.minSecondary",
             "label": "Min 2nd (max=off)",
-            "format": "raw",
-            "visible": "optional"
+            "format": "raw"
           }
         ]
       },
@@ -949,6 +1068,10 @@
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           }
@@ -973,6 +1096,10 @@
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           }
@@ -990,13 +1117,17 @@
           },
           {
             "path": "newOwner",
-            "label": "Owner (0=locked)",
+            "label": "Owner (0=lock+public)",
             "format": "addressName",
             "params": {
               "types": [
                 "eoa",
                 "wallet",
                 "contract"
+              ],
+              "sources": [
+                "local",
+                "ens"
               ]
             }
           }

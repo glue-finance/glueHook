@@ -43,7 +43,7 @@ export const robinhood = defineChain({
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: { default: { http: ["https://rpc.mainnet.chain.robinhood.com"] } },
   blockExplorers: {
-    default: { name: "Robinscan", url: "https://robinscan.io" },
+    default: { name: "Blockscout", url: "https://robinhoodchain.blockscout.com" },
   },
   contracts: MULTICALL3,
 });
@@ -300,7 +300,7 @@ export const NETS: Net[] = [
     rpcs: rpcsFor(4663, "https://rpc.mainnet.chain.robinhood.com"),
     hook: CANONICAL_HOOK, poolManager: "0x8366a39CC670B4001A1121B8F6A443A643e40951",
     ...gens(64035627, 62244207, 43628009, 30206983),
-    explorer: "https://robinscan.io",
+    explorer: "https://robinhoodchain.blockscout.com",
     universalRouter: "0x8876789976decbfcbbbe364623c63652db8c0904",
     logRange: 50_000,
   },
